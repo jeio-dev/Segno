@@ -19,7 +19,7 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 | Id | Build phase | Status | PR |
 |---|---|---|---|
 | B1 | Workspace and Plan file | done | [#6](https://github.com/jeio-dev/Segno/pull/6) |
-| B2 | Event log and reducer | done | |
+| B2 | Event log and reducer | done | [#7](https://github.com/jeio-dev/Segno/pull/7) |
 | B3 | Engine host, app shell and Projects | not started | |
 | B4 | Happy-path Task with a fake Adapter | not started | |
 | B5 | Claude Code Adapter | not started | |
