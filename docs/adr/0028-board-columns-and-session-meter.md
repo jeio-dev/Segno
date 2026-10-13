@@ -1,0 +1,3 @@
+# Board columns and the session meter
+
+The board has seven columns: Queued (waiting, ready), Coding (coding, taken-over), Testing, Review, Merge (held, merging), Blocked and Done. Done collapses after the 5 newest. Superseded Tasks aren't on the board. Cards show retry counters (`R n/2`, `T n/2`, and `I n/3` once used), a pause badge, the Block reason, the wait reason when queued, and a dot for the Role holding the Task. The dot shows "you" when held, blocked or taken over, and pulses while a Run is live. The session meter shows live agent Runs against concurrency, plus the number of agent sessions started in the active Phase.

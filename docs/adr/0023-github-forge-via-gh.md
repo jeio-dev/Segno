@@ -1,0 +1,3 @@
+# Phase PRs go through a forge adapter, and v1's is GitHub via the developer's gh login
+
+When a Phase's last Task is done, Segno pushes the Phase branch and opens the Phase PR with the developer's own `gh` login. Segno stores no forge tokens. The PR body is generated from the Event log. Merge detection polls the PR state every 60 s, not git ancestry, so squash and rebase merges are recognized. A merge starts the next Phase automatically. A PR closed without merging becomes an Awaiting-you item (reopen or abandon). Without a usable `gh`, Segno still pushes and offers a compare URL plus a `segno phase merged` confirmation.

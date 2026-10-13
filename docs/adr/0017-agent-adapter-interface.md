@@ -1,0 +1,3 @@
+# Agent Adapters are built-in modules that do all CLI parsing and classify outcomes
+
+An Adapter exposes `detect()`, `capabilities` (resume, structuredOutput, toolAllowlist, usage) and `start(RunSpec) → RunHandle`. The RunHandle has a normalized event stream, a result and `stop()`. The Engine builds every prompt and permission profile, and the Adapter only maps them to CLI flags. The Adapter is the only code that parses a CLI's output, and it classifies each Run as completed, failed, crashed or rate-limited. The Engine owns timeouts and calls `stop()`. A role configured with an Adapter that lacks a capability it needs is refused at config validation, never degraded at run time. Adapters are compiled in, and there is no plugin loading.
