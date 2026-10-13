@@ -1,0 +1,22 @@
+schemaVersion: 1
+title: Duplicate ids
+summary: Phase and Task ids must be unique.
+phases:
+  - id: work
+    title: First Phase
+    tasks:
+      - id: implement
+        title: First Task
+        description: Make the change.
+        acceptance: [The change works]
+      - id: implement
+        title: Second Task
+        description: Make another change.
+        acceptance: [The other change works]
+  - id: work
+    title: Second Phase
+    tasks:
+      - id: verify
+        title: Verify the change
+        description: Verify the behavior.
+        acceptance: [The behavior is verified]

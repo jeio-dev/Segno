@@ -1,0 +1,12 @@
+schemaVersion: 1
+title: Generated Task in input
+summary: Generated Tasks cannot be submitted.
+phases:
+  - id: work
+    title: Work
+    tasks:
+      - id: implement
+        title: Implement the change
+        description: Make the change.
+        acceptance: [The change works]
+        generated: true

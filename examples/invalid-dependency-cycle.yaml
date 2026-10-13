@@ -1,0 +1,22 @@
+schemaVersion: 1
+title: Cyclic dependencies
+summary: A Phase must have an acyclic dependency graph.
+phases:
+  - id: work
+    title: Work
+    tasks:
+      - id: first
+        title: First Task
+        description: Make the first change.
+        acceptance: [The first change works]
+        dependsOn: [second]
+      - id: second
+        title: Second Task
+        description: Make the second change.
+        acceptance: [The second change works]
+        dependsOn: [first]
+      - id: self
+        title: Self-dependent Task
+        description: This Task cannot start.
+        acceptance: [The Task starts]
+        dependsOn: [self]

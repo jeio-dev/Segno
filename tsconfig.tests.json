@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "rootDir": ".",
+    "outDir": "dist/tests",
+    "emitDeclarationOnly": true
+  },
+  "include": [
+    "vitest.config.ts",
+    "packages/*/tests/**/*.ts",
+    "packages/cli/tsdown.config.ts"
+  ],
+  "references": [{ "path": "packages/plan-format" }]
+}

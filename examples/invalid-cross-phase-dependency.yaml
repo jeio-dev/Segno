@@ -1,0 +1,19 @@
+schemaVersion: 1
+title: Cross-Phase dependency
+summary: Tasks can depend only on Tasks in the same Phase.
+phases:
+  - id: work
+    title: Work
+    tasks:
+      - id: implement
+        title: Implement the change
+        description: Make the change.
+        acceptance: [The change works]
+        dependsOn: [verify]
+  - id: verification
+    title: Verification
+    tasks:
+      - id: verify
+        title: Verify the change
+        description: Verify the behavior.
+        acceptance: [The behavior is verified]

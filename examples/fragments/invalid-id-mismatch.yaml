@@ -1,0 +1,4 @@
+id: replacement
+title: Query by title
+description: Query note titles.
+acceptance: [Titles are found]

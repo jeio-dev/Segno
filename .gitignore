@@ -6,3 +6,9 @@
 
 # Session handoff notes are not project docs
 docs/handoff.md
+
+# Workspace dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+.vitest/

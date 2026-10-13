@@ -1,0 +1,37 @@
+schemaVersion: 1
+title: Search saved notes
+summary: |
+  Let people find their saved notes by title and content.
+
+  Build the search index first, then add the search screen.
+phases:
+  - id: search-index
+    title: Search index
+    docs: |
+      Document how the search index is rebuilt.
+    tasks:
+      - id: index-notes
+        title: Index saved notes
+        description: |
+          Index note titles and content when notes change.
+        acceptance:
+          - Saved notes are searchable by title and content
+        context:
+          - src/notes/**
+        risk:
+          flags: [migration, migration]
+          reason: Adds an index to existing note data.
+      - id: query-notes
+        title: Query the search index
+        description: Return matching notes in relevance order.
+        acceptance:
+          - Search returns matching notes in relevance order
+        dependsOn: [index-notes]
+  - id: search-screen
+    title: Search screen
+    tasks:
+      - id: show-results
+        title: Show search results
+        description: Add a search field and a list of matching notes.
+        acceptance:
+          - Typing a query shows matching notes

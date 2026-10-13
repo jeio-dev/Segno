@@ -18,7 +18,7 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 
 | Id | Build phase | Status | PR |
 |---|---|---|---|
-| B1 | Workspace and Plan file | not started | |
+| B1 | Workspace and Plan file | done | |
 | B2 | Event log and reducer | not started | |
 | B3 | Engine host, app shell and Projects | not started | |
 | B4 | Happy-path Task with a fake Adapter | not started | |
@@ -93,7 +93,7 @@ Every build phase's PR updates, as relevant:
 
 ## B1: Workspace and Plan file
 
-**Implements:** [plan-format.md](spec/plan-format.md) in full (schema, field rules, automatic Docs task definition, validation, fragments, export, as a library); [cli.md](spec/cli.md) § Conventions, § Exit codes and § Commands (`segno plan validate`). § Installing comes in B10. [ADR-0002] [ADR-0011] [ADR-0012] [ADR-0036] [ADR-0042].
+**Implements:** [plan-format.md](spec/plan-format.md) in full (schema, field rules, automatic Docs task definition, validation, fragments, export, as a library); [cli.md](spec/cli.md) § Conventions, § Exit codes and § Commands (`segno plan validate`). § Installing comes in B10. [ADR-0002] [ADR-0011] [ADR-0012] [ADR-0036] [ADR-0042] [ADR-0044].
 
 **Delivers:**
 - The workspace, toolchain, CI and the eight packages. `core`, `engine`, `adapter-claude-code`, `host`, `app` and `ui` stay empty shells, with no Electron or React dependencies until B3.
@@ -107,6 +107,22 @@ Every build phase's PR updates, as relevant:
 **Exit check (`pnpm check:b1`):** The workspace builds, and the built `segno` bundle runs as a subprocess from a temp directory outside any git repo. `segno plan validate examples/two-phase.yaml` exits 0. Each `examples/invalid-*.yaml` exits 2 and prints every error as `file:line:column  code  message`. An unknown subcommand exits 2. The committed JSON Schema accepts `two-phase.yaml` and each named cross-reference fixture, and rejects every other invalid fixture [ADR-0036]. CI is green on Node 22 and 24.
 
 **Docs:** creates `README.md` (what Segno is, that v1 is unreleased, and running `plan validate` from a built checkout) and `CHANGELOG.md`.
+
+**B1 implementation decisions, agreed with the developer:**
+- Plan parsing returns `{ valid: true, plan }` or `{ valid: false, errors }`; expected input failures do not throw. Successful input contains authored Tasks only.
+- Blank titles, acceptance criteria and risk reasons are invalid. Summary, description and Phase docs have no additional non-empty constraint.
+- Value errors point to values, unknown keys to keys, and missing fields to their containing object. Errors without a source location omit it; the CLI prints `?`.
+- A syntax-invalid document reports all YAML syntax errors before structural validation. Parseable documents report structural and inspectable reference errors together, in source order.
+- Duplicate dependency entries use `schema`; self-dependencies use `dependency-cycle`. Each separate cyclic group produces one error listing its ids.
+- Fragment validation returns Task definitions without applying changes. Its context is the valid current authored Plan, the original Task id and the Plan's complete Task-id history. A split checks the graph after dependent rewiring.
+- Export takes optional superseded Task ids and Reviewer risks by Task id. It preserves current Docs definitions, marks them generated, and rebuilds Docs dependencies. Risk flags retain authored order, append Reviewer flags in supplied order and deduplicate; reasons are separated by blank lines.
+- Built-in Docs description: “Update the README and guides to reflect this Phase's behavior changes, and add changelog entries for user-visible changes.” Its criteria are “README and guides reflect the Phase's behavior changes” and “Changelog entries exist for user-visible changes”. Phase docs are appended after a blank line.
+- Generated Docs ids may be 53 characters [ADR-0044]. The committed structural schema uses Draft 2020-12.
+- CLI success is silent. Diagnostics, read errors and usage go to stderr. The CLI accepts `.yaml` and `.yml` only.
+- Decoding uses YAML 1.2 core types. Unsupported version directives, unresolved tags and aliases use `yaml-syntax`; ordinary anchors and aliases are allowed. Malformed UTF-8 bytes are CLI read errors.
+- Dependencies are pinned exactly. `skipLibCheck` skips third-party declarations because Zod references `URL`; Segno source retains the agreed browser and Node compiler boundaries.
+
+**Verification:** implementation and code review are complete. `pnpm check:b1` passes on Node 22.23.3 and 24.21.0 with 73 tests at S1 and S7, including every Plan fixture through a copied standalone CLI bundle outside git. Frozen-lockfile installation passes. The PR's GitHub Actions matrix runs the same check on Node 22 and 24; both jobs must be green before merge.
 
 ## B2: Event log and reducer
 
