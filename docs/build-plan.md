@@ -1,6 +1,6 @@
 # Segno v1 build plan
 
-This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1 cut line](spec/README.md#v1-cut-line) and [ADR-0030]: the headless core with the CLI as its only interface, `concurrency` fixed at 1, the Claude Code Adapter only, and the GitHub forge through `gh`. Anything marked **(v1.1)**, **(v1.2)** or **(later)** in the spec is out, except that the v1 server answers those Commands with `unsupported-in-version`.
+This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1 cut line](spec/README.md#v1-cut-line) and [ADR-0042]: the desktop app on Linux and macOS, holding many Projects, with `concurrency` fixed at 1 per Project, the Claude Code Adapter only, and the GitHub forge through `gh`. Anything marked **(v1.2)** or **(later)** in the spec is out, except that the v1 Engine answers v1.2 Commands with `unsupported-in-version`.
 
 > **"Build phase" is not "Phase".** A build phase (`B1`…`B10`) is a step in building Segno. It has nothing to do with the domain term *Phase* in [glossary.md](glossary.md), which is a slice of a Segno Plan. This document always writes "build phase" in full, or uses the id.
 
@@ -11,7 +11,8 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 - **Every PR ships its docs** ([Docs per PR](#docs-per-pr)).
 - **Tests are written test-first, only at the agreed seams** ([Seams](#seams)), in vertical slices (see `.claude/skills/tdd`).
 - **A build phase is done when its exit check passes:** `pnpm check:bN` exits 0, plus the live check where one is listed.
-- **Event shapes may change until the first release** [ADR-0035]. Every change to an existing Event's shape is logged in [Event shape changes](#event-shape-changes), and local `.segno/segno.db` files are deleted, not migrated. The catalog freezes in B10.
+- **From B3 on, every build phase ships its Engine behavior together with its GUI surface**, so each one can be shown working in the app.
+- **Event shapes may change until the first release** [ADR-0035] [ADR-0043]. Every change to an existing Event's shape is logged in [Event shape changes](#event-shape-changes), and local Event logs (`projects/<id>/segno.db` in the app data directory) are deleted, not migrated. The catalog freezes in B10.
 
 ## Status
 
@@ -19,18 +20,18 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 |---|---|---|---|
 | B1 | Workspace and Plan file | not started | |
 | B2 | Event log and reducer | not started | |
-| B3 | Server and CLI skeleton | not started | |
+| B3 | Engine host, app shell and Projects | not started | |
 | B4 | Happy-path Task with a fake Adapter | not started | |
 | B5 | Claude Code Adapter | not started | |
 | B6 | Failure paths | not started | |
 | B7 | Developer Task Commands | not started | |
-| B8 | Resilience | not started | |
+| B8 | Resilience, tray and notifications | not started | |
 | B9 | GitHub forge and multi-Phase | not started | |
-| B10 | `segno init` and v1 release | not started | |
+| B10 | Packaging and v1 release | not started | |
 
 ## Workspace
 
-A pnpm workspace [brief §Decided], built as one monorepo and shipped as one bundled `segno` package [ADR-0034]:
+A pnpm workspace [brief §Decided], built as one monorepo and shipped as one desktop app [ADR-0037] [ADR-0043]:
 
 ```
 package.json            private workspace root; packageManager pins pnpm (corepack)
@@ -39,45 +40,52 @@ tsconfig.base.json
 biome.json
 vitest.config.ts        one project per package
 examples/               example Plan files and invalid fixtures
-schemas/                committed JSON Schemas (Plan file, config) [ADR-0002] [ADR-0025] [ADR-0034]
+schemas/                committed JSON Schemas (Plan file, config) [ADR-0002] [ADR-0025] [ADR-0036]
 packages/
   plan-format/          browser-safe: YAML parse, validate, fragments, export, JSON Schema
   core/                 browser-safe: Event catalog, reducer, Command and rejection schemas,
-                        Verdict schema, config schemas, AgentAdapter and RunSpec types
+                        host protocol schemas, Verdict schema, config schemas,
+                        AgentAdapter and RunSpec types
   engine/               Node: Engine loop, SQLite Event log, timers, Watchdog, budgets, Run
                         context and prompts, script Runs, git and worktrees, gh forge
                         (+ @segno/engine/testing: fake Adapter, fake clock, temp repos)
   adapter-claude-code/  Node: claude -p mapping, stream parsing, classification, fixtures
-  server/               Hono app and SSE; exports AppType and startServer(deps)
-  cli/                  the segno bin: typed Hono client, offline plan validate, init, serve
+  host/                 Node: the Engine host. Project registry, one Engine per Project,
+                        the shared rate-limit pause, the IPC protocol; exports startHost(deps)
+  cli/                  the segno command: offline plan validate
+  app/                  Electron main and preload: window, single-instance lock, host
+                        supervision, tray, notifications, dialogs, updater
+  ui/                   React and Vite renderer: Projects, board, drawer, Awaiting you,
+                        History, settings
 ```
 
-- **Boundaries enforced by the compiler.** `core` and `plan-format` build with `lib: ["ES2023"]` and no `@types/node`, so the reducer stays usable by the v1.1 GUI [ADR-0007]. The Engine depends only on the `AgentAdapter` interface in `core` [ADR-0017]. `startServer(deps)` is the composition root: `segno serve` passes the real Adapters, and tests pass fakes.
-- **Toolchain.** ESM only (`module: nodenext`), `tsc --build` with project references, Vitest, Biome, and tsdown to bundle `cli` into `segno` with `better-sqlite3` external [ADR-0034]. `engines.node` is `>=22`.
-- **CI.** GitHub Actions on every PR, on Node 22 and 24: install, `tsc --build`, Biome, Vitest. Real-git tests run in CI. Real `claude` and `gh` never do.
+- **Boundaries enforced by the compiler.** `core` and `plan-format` build with `lib: ["ES2023"]`, and `ui` with `lib: ["ES2023", "DOM"]`, all without `@types/node`, so the reducer and the renderer stay free of Node [ADR-0007] [ADR-0037]. The Engine depends only on the `AgentAdapter` interface in `core` [ADR-0017]. `startHost(deps)` is the composition root: the app passes the real Adapters, and tests pass fakes.
+- **Toolchain.** ESM only (`module: nodenext`), `tsc --build` with project references, Vitest, Biome, tsdown to bundle `cli`, electron-vite for `app` and `ui` (from B3), and electron-builder for releases (B10). `better-sqlite3` is rebuilt for Electron's Node. `engines.node` is `>=22`.
+- **CI.** GitHub Actions on every PR: install, `tsc --build`, Biome, Vitest. On Node 22 and 24 until B3, then on the Node major that the chosen Electron bundles. From B3, S9 runs under xvfb on Linux. Real-git tests run in CI. Real `claude` and `gh` never do.
 - **Exit-check harness.** One root script per build phase, `pnpm check:bN`, runs that build phase's exit scenario. Live checks are `pnpm check:bN:live`, and the developer triggers them.
 
 ## Seams
 
-Tests sit only at these seams. Mocks appear only at system boundaries: the agent CLI, the clock and `gh`. Git, SQLite and the shell run for real, in temp dirs. Expected values are literals from the spec, never recomputed by the code under test.
+Tests sit only at these seams. Mocks appear only at system boundaries: the agent CLI, the clock, `gh`, and the OS dialogs, tray and notifications. Git, SQLite and the shell run for real, in temp dirs. Expected values are literals from the spec, never recomputed by the code under test.
 
 | Id | Seam | Driven through | Catches | Misses |
 |---|---|---|---|---|
-| S1 | Plan file API (`plan-format`) | `parsePlan`, `validateFragment`, `exportPlan`; every fixture also checked against the committed JSON Schema | every validation code with line and column; export round-trip; drift between zod rules and the JSON Schema | how the Engine uses a Plan |
+| S1 | Plan file API (`plan-format`) | `parsePlan`, `validateFragment`, `exportPlan`; every fixture also checked against the committed JSON Schema | every validation code with line and column; export round-trip; drift between the zod structural rules and the JSON Schema [ADR-0036] | how the Engine uses a Plan |
 | S2 | Reducer (`core`) | `project(events) → State` over hand-written Event sequences | derivation of board, Awaiting you, budgets and wait reasons | whether the Engine emits the right Events |
-| S3 | Engine (`engine`), the main seam | `engine.handle(command)` plus injected ports (fake AgentAdapter, fake clock, fake Forge), observed through appended Events and derived State. Real git (temp repo plus bare remote), real `sh -c`, real SQLite on a temp file | every Plan, Phase and Task table row; budgets; merge queue; Verdict repair; recovery by reopening the DB | real `claude` and `gh`; HTTP and CLI |
+| S3 | Engine (`engine`), the main seam | `engine.handle(command)` plus injected ports (fake AgentAdapter, fake clock, fake Forge), observed through appended Events and derived State. Real git (temp repo plus bare remote), real `sh -c`, real SQLite on a temp file | every Plan, Phase and Task table row; budgets; merge queue; Verdict repair; recovery by reopening the DB | real `claude` and `gh`; the host and the GUI |
 | S4 | Git module (`engine`) | its own functions against temp repos | conflicts, dirty trees, stale worktrees, lockfile-change detection, commit trailers | when the Engine calls it |
 | S5 | Claude Code Adapter | `adapter.start(spec)` with `binary` pointed at a replay stub that records argv and replays recorded `stream-json`, exit codes and signals | flag mapping, the four classifications, `resetAt`, `RunEvent`s, `stop()` | real CLI drift, covered by the opt-in live contract test `pnpm test:live` |
-| S6 | HTTP API (`server`) | the in-process Hono app (`app.request`, typed client) on a real Engine and a fake Adapter | host, token and origin checks; 200-with-rejection; query shapes; SSE replay with `Last-Event-ID`; `410 pruned` | CLI rendering and exit codes |
-| S7 | CLI (`cli`, the built bundle) | the `segno` binary as a subprocess, against a server started with `startServer({ adapters: [fake], clock })` | arguments, exit codes 0/1/2/3, output, server discovery, `watch` bell and reconnect | Engine logic (S3 owns it) |
+| S6 | Engine host protocol (`host`) | `startHost({ adapters: [fake], clock, appData })` in plain Node, without Electron, driven through its protocol calls, with real Engines | Command and query shapes; rejection results; Event-stream replay with `since`; the Project registry and app-level calls; `unavailable` Projects; the app-wide rate-limit pause; `pruned` | the window, IPC wiring and OS integration |
+| S7 | CLI (`cli`, the built bundle) | the `segno` command as a subprocess | arguments, exit codes 0 and 2, output | everything else |
 | S8 | gh Forge module (`engine`) | the forge functions with `gh` pointed at a replay stub | PR creation and body, PR state parsing, missing or logged-out `gh` | real GitHub behavior, covered by the B9 live check |
+| S9 | The app, end to end | Playwright's Electron driver on the built app, with a temp app data dir, temp repos and the fake Adapter, under xvfb in CI. A few journeys per build phase, never Engine logic | the window wiring: IPC, the preload bridge, dialogs, host supervision, what each journey shows and sends | Engine logic (S3 owns it); native notifications and the tray, checked by hand in the B8 live check |
 
 ## Docs per PR
 
 Every build phase's PR updates, as relevant:
 
 1. **`docs/build-plan.md`:** its row in [Status](#status) (`done` and the PR link), any notes, and every Event shape change [ADR-0035].
-2. **`README.md`:** created in B1. Each build phase adds the `segno` commands that now work. Until B10 it says plainly that v1 is unreleased.
+2. **`README.md`:** created in B1. Each build phase adds what now works. Until B10 it says plainly that v1 is unreleased.
 3. **`CHANGELOG.md`:** created in B1 in Keep a Changelog format, with entries under `Unreleased`. B10 turns them into `1.0.0`.
 4. **Spec and ADRs:** changed only through a new ADR plus the matching spec edit, after asking the developer.
 
@@ -85,29 +93,28 @@ Every build phase's PR updates, as relevant:
 
 ## B1: Workspace and Plan file
 
-**Implements:** [plan-format.md](spec/plan-format.md) in full (schema, field rules, automatic Docs task definition, validation, fragments, export, as a library); [cli.md § Conventions](spec/cli.md#conventions) (repo discovery, exit codes 0 and 2) and `segno plan validate`. [ADR-0002] [ADR-0011] [ADR-0012] [ADR-0030] [ADR-0034].
+**Implements:** [plan-format.md](spec/plan-format.md) in full (schema, field rules, automatic Docs task definition, validation, fragments, export, as a library); [cli.md](spec/cli.md) § Conventions, § Exit codes and § Commands (`segno plan validate`). § Installing comes in B10. [ADR-0002] [ADR-0011] [ADR-0012] [ADR-0036] [ADR-0042].
 
 **Delivers:**
-- The workspace, toolchain, CI and the six packages.
+- The workspace, toolchain, CI and the eight packages. `core`, `engine`, `adapter-claude-code`, `host`, `app` and `ui` stay empty shells, with no Electron or React dependencies until B3.
 - `plan-format`: parsing with line and column, every validation code, replan and split fragment checks (given the Plan's id history), export with `generated: true` Docs tasks.
-- `schemas/plan-file.v1.json`, equivalent to the zod rules.
+- `schemas/plan-file.v1.json`, covering the structural rules [ADR-0036].
 - `examples/` with a valid two-Phase Plan and at least one invalid fixture per validation code.
-- `segno plan validate <file>`, offline. Other subcommands are a usage error (exit 2) until they exist.
-- `pnpm pack` of the `segno` bundle.
+- `segno plan validate <file>` as a built bundle, offline, needing no repo or config. Any other subcommand is a usage error (exit 2).
 
-**Seams:** S1, S7 (offline).
+**Seams:** S1, S7.
 
-**Exit check (`pnpm check:b1`):** The packed tarball is installed into a temp prefix. `segno plan validate examples/two-phase.yaml` exits 0. Each `examples/invalid-*.yaml` exits 2 and prints every error as `file:line:column  code  message`. The committed JSON Schema accepts and rejects exactly the same fixture set. CI is green on Node 22 and 24.
+**Exit check (`pnpm check:b1`):** The workspace builds, and the built `segno` bundle runs as a subprocess from a temp directory outside any git repo. `segno plan validate examples/two-phase.yaml` exits 0. Each `examples/invalid-*.yaml` exits 2 and prints every error as `file:line:column  code  message`. An unknown subcommand exits 2. The committed JSON Schema accepts `two-phase.yaml` and each named cross-reference fixture, and rejects every other invalid fixture [ADR-0036]. CI is green on Node 22 and 24.
 
-**Docs:** creates `README.md` (what Segno is, installing from a tarball, `plan validate`) and `CHANGELOG.md`.
+**Docs:** creates `README.md` (what Segno is, that v1 is unreleased, and running `plan validate` from a built checkout) and `CHANGELOG.md`.
 
 ## B2: Event log and reducer
 
-**Implements:** [engine.md § Processing model](spec/engine.md#processing-model), [§ Plan lifecycle](spec/engine.md#plan-lifecycle) (submit, approve, send back, abandon; slug derivation), [§ Commands](spec/engine.md#commands) for the Plan Commands, [§ Rejection codes](spec/engine.md#rejection-codes), [§ Event catalog](spec/engine.md#event-catalog) (all v1 types declared); [store.md § The Event log](spec/store.md#the-event-log) and the `.segno/` directory. [ADR-0007] [ADR-0012] [ADR-0013] [ADR-0022] [ADR-0031] [ADR-0033] [ADR-0035].
+**Implements:** [engine.md § Processing model](spec/engine.md#processing-model), [§ Plan lifecycle](spec/engine.md#plan-lifecycle) (submit, approve, send back, abandon; slug derivation), [§ Commands](spec/engine.md#commands) for the Plan Commands, [§ Rejection codes](spec/engine.md#rejection-codes), [§ Event catalog](spec/engine.md#event-catalog) (all v1 types declared); [store.md § The Event log](spec/store.md#the-event-log). [ADR-0007] [ADR-0012] [ADR-0013] [ADR-0022] [ADR-0031] [ADR-0035].
 
 **Delivers:**
 - `core`: Event types with `v`, the reducer and derived State (Plans and the Awaiting-you queue so far), Command and rejection schemas.
-- `engine`: the SQLite Event log (gap-free `seq`, one transaction per Command), single-writer processing in arrival order, and the Plan lifecycle Commands.
+- `engine`: the SQLite Event log at a given path (gap-free `seq`, one transaction per Command), single-writer processing in arrival order, and the Plan lifecycle Commands.
 - Replay on open; an unknown `type` or `v` stops startup and names it.
 
 **Seams:** S2, S3.
@@ -116,98 +123,178 @@ Every build phase's PR updates, as relevant:
 
 **Interim state:** approving a Plan makes it `active`, but its first Phase stays `pending` until B4. There's no interface yet; B3 adds it.
 
-## B3: Server and CLI skeleton
+## B3: Engine host, app shell and Projects
 
-**Implements:** [api.md](spec/api.md) binding and lifecycle, authentication and request checks (token; the cookie and `/auth` are v1.1), [§ Commands](spec/api.md#commands), the queries `/api/board` (Plan and Phase level), `/api/awaiting`, `/api/plans`, `/api/plans/:id`, `/api/plans/:id/export`, `/api/phases`, `/api/phases/:id/events`, `/api/config`, `/api/health`, [§ Event stream](spec/api.md#event-stream), [§ Error format](spec/api.md#error-format); `unsupported-in-version` for v1.1 and v1.2 Commands. [store.md § `.segno/` layout](spec/store.md#segno-layout) (`server.json` lock, `server.log`). [config.md](spec/config.md) both files and § Validation (Adapter checks come in B5). [cli.md](spec/cli.md): finding the server, exit codes 1 and 3, `--json`, implicit targets, `serve`, `plan submit/approve/send-back/abandon/export`, `status`, `awaiting`, `watch`, and the v1.2 planning commands exiting 1. [ADR-0004] (config `allow` validation) [ADR-0006] [ADR-0007] [ADR-0008] [ADR-0025] [ADR-0026] [ADR-0027] [ADR-0028] [ADR-0030].
+**Implements:** [api.md](spec/api.md) in full, except the Task and Run queries, `runOutput` and `openWorktree` (B4 and B7) and `cli.install` (B10); the `board` query at Plan and Phase level. [store.md § App data directory](spec/store.md#app-data-directory). [config.md](spec/config.md): all three files and § Validation (Adapter checks come in B5). [engine.md](spec/engine.md) `unsupported-in-version` for v1.2 Commands, and § Startup recovery and shutdown for startup per Project. [gui.md](spec/gui.md): § Screens, § Projects, § Adding a Project, § Board (empty state, submitting a Plan, header and Export Plan), § Awaiting you for `plan-approval` with Plan review, § Settings (App: editor and theme; Project: name, models and Remove project), § Connection state, § Visual rules. [ADR-0004] (config `allow` validation) [ADR-0007] [ADR-0022] [ADR-0025] [ADR-0032] [ADR-0037] [ADR-0038] [ADR-0039] [ADR-0042].
 
 **Delivers:**
-- `server`: Hono app, `AppType`, `startServer(deps)`, SSE with replay from `Last-Event-ID` or `?since`, and a 15 s heartbeat.
-- `cli`: the typed client, the commands above, and `watch` with one `\a` per new Awaiting-you item.
+- `host`: `startHost(deps)`, the Project registry, one Engine per Project, the protocol calls above, and Event streams with replay from `since`.
+- `app`: the Electron window, the preload bridge, the single-instance lock, and host supervision (restart once, then **Restart Engine**).
+- `ui`: the Projects sidebar, the add-project flow with detection, the board shell, Plan submit (picker and drop), Plan review and approval, Export Plan, and settings.
+- CI pinned to the Electron Node major, with S9 under xvfb.
 
-**Seams:** S6, S7.
+**Seams:** S6, S9.
 
-**Exit check (`pnpm check:b3`):** Through the harness server: `plan submit` prints the id. `awaiting` lists `plan-approval` with the command that resolves it. A background `watch` rings `\a` exactly once. `plan approve`, then `status` shows the Plan `active`. A restart gives an identical `status`. A second `serve` exits 2 naming the pid. A bad `Host` gets 421. With no server, the CLI exits 3. `segno plan new` exits 1 `unsupported-in-version`. A dropped `watch` reconnects with no gaps or duplicates.
+**Exit check (`pnpm check:b3`):**
+- **S6:**
+  - Two Projects in one host. Submitting in A creates `plan-approval` in A only.
+  - `subscribe` with `since` replays with no gaps or duplicates.
+  - An unknown `projectId` gets `unknown-project`.
+  - A Project with an invalid committed config is `unavailable` with every error, while the other keeps running.
+  - Restarting the host gives identical `board` and `awaiting` results.
+  - A v1.2 Command is rejected `unsupported-in-version`.
+- **S9:**
+  - Adding a temp repo with no config shows the detected settings. **Add** writes `segno.config.json` without committing it, and the commit hint shows.
+  - Adding a folder that isn't a repo shows `not-a-repo`.
+  - Submitting `examples/two-phase.yaml` shows `plan-approval` in the panel and the sidebar count. Approving shows the Plan `active`.
+  - Killing the host process, the app restarts it and the board is unchanged.
+  - A second launch focuses the existing window.
 
-**Docs:** README gains `serve`, the `plan` commands, `status`, `awaiting` and `watch`.
+**Interim state:** an approved Plan's first Phase stays `pending` until B4.
+
+**Docs:** README gains running the app from a checkout, adding a Project, and submitting and approving a Plan.
 
 ## B4: Happy-path Task with a fake Adapter
 
-**Implements:** [engine.md § Phase lifecycle](spec/engine.md#phase-lifecycle) rows `pending` → `starting` → `active` (fetch, Phase branch cut, Docs task added, deferred start on fetch failure); [§ Automatic transitions](spec/engine.md#automatic-transitions) success rows from `waiting` to `done`; the merge queue and the skipped re-test; [§ Scheduling](spec/engine.md#automatic-transitions); `plan.abandon` effects on worktrees and Task branches. [store.md § Worktrees](spec/store.md#worktrees), [§ Branches](spec/store.md#branches), `runs/` and `tasks/<id>/merged.diff`. [runners.md § Run kinds](spec/runners.md#run-kinds) (`tests`, `setup`, `merge`), [§ Adapter interface](spec/runners.md#adapter-interface) (types only), [§ Script Runs](spec/runners.md#script-runs), [§ Run environment](spec/runners.md#run-environment), [§ Commits](spec/runners.md#commits), [§ Transcripts and live output](spec/runners.md#transcripts-and-live-output). [api.md](spec/api.md) Task and Run queries and [§ Live Run output](spec/api.md#live-run-output). [cli.md](spec/cli.md) `task show`, `task diff`, `task logs [--follow]`, and the session meter in `status`. [ADR-0001] [ADR-0003] [ADR-0005] [ADR-0009] [ADR-0011] [ADR-0014] [ADR-0017] [ADR-0018] [ADR-0029] [ADR-0033].
+**Implements:** [engine.md § Phase lifecycle](spec/engine.md#phase-lifecycle) rows `pending` → `starting` → `active` (fetch, Phase branch cut, Docs task added, deferred start on fetch failure); [§ Automatic transitions](spec/engine.md#automatic-transitions) success rows from `waiting` to `done`; the merge queue and the skipped re-test; [§ Scheduling](spec/engine.md#automatic-transitions); `plan.abandon` effects on worktrees and Task branches. [store.md § Worktrees](spec/store.md#worktrees), [§ Branches](spec/store.md#branches), `runs/` and `tasks/<id>/merged.diff`. [runners.md § Run kinds](spec/runners.md#run-kinds) (`tests`, `setup`, `merge`), [§ Adapter interface](spec/runners.md#adapter-interface) (types only), [§ Script Runs](spec/runners.md#script-runs), [§ Run environment](spec/runners.md#run-environment), [§ Commits](spec/runners.md#commits), [§ Transcripts and live output](spec/runners.md#transcripts-and-live-output). [api.md](spec/api.md) the `task`, `taskDiff`, `run`, `runTranscript` and `runPrompt` queries and [§ Live Run output](spec/api.md#live-run-output). [gui.md](spec/gui.md) § Board columns and cards (happy-path states), the session meter, and § Card drawer (Diff, Tests and Transcript tabs). [ADR-0001] [ADR-0003] [ADR-0005] [ADR-0009] [ADR-0011] [ADR-0014] [ADR-0017] [ADR-0018] [ADR-0028] [ADR-0029] [ADR-0033] [ADR-0038].
 
 **Delivers:**
 - The git module (worktrees outside the repo, Task branches, merge with lockfile detection, commits with the `Segno-Task:` trailer).
 - Script Runs with the `SEGNO_*` environment, and auto-commit after Coder and Docs Runs.
 - The fake Adapter, fake clock and temp-repo fixtures at `@segno/engine/testing`.
 - Agent Runs get a minimal placeholder prompt until B5.
+- The board's columns and cards, and the drawer with live output.
 
-**Seams:** S3, S4, S7.
+**Seams:** S3, S4, S6, S9.
 
-**Exit check (`pnpm check:b4`):** On a temp repo with a bare remote, a Plan with Tasks `a` and `b` (`b` depends on `a`) and a fake Coder that writes files reaches every Task `done`, including `<phase-id>-docs`. The Phase branch has moved only by fast-forward. Every Segno commit carries `Segno-Task:`. Worktrees and Task branches are gone, and `merged.diff` is kept. `task logs --follow` streams live output. An unreachable remote gives `phase.startDeferred`, which the fake clock retries at +5 min.
+**Exit check (`pnpm check:b4`):**
+- **S3:** on a temp repo with a bare remote, a Plan with Tasks `a` and `b` (`b` depends on `a`) and a fake Coder that writes files reaches every Task `done`, including `<phase-id>-docs`.
+  - The Phase branch has moved only by fast-forward, and every Segno commit carries `Segno-Task:`.
+  - Worktrees (under the Project's directory) and Task branches are gone, and `merged.diff` is kept.
+  - An unreachable remote gives `phase.startDeferred`, which the fake clock retries at +5 min.
+- **S6:** `runOutput` streams live output, then `end`.
+- **S9:** the same Plan's cards move to Done on the board, and the drawer's Transcript tab streams a live Run.
 
 **Interim state:** the Phase stays `active` with every Task `done`. `awaiting-merge`, push and the Phase PR come in B9.
 
 ## B5: Claude Code Adapter
 
-**Implements:** [runners.md § Claude Code Adapter (v1)](spec/runners.md#claude-code-adapter-v1), [§ Permission profiles](spec/runners.md#permission-profiles), [§ Run context](spec/runners.md#run-context) (first-pass Coder, Reviewer and Docs prompts, `probe`), [§ Verdict schema](spec/runners.md#verdict-schema), [§ Adapter interface](spec/runners.md#adapter-interface) capability gating; [config.md § Validation](spec/config.md#validation) Adapter checks; usage reporting in `/api/board` and `status`. [ADR-0004] [ADR-0016] (schema only) [ADR-0017] [ADR-0018] [ADR-0021] (classification only) [ADR-0024] [ADR-0030].
+**Implements:** [runners.md § Claude Code Adapter (v1)](spec/runners.md#claude-code-adapter-v1), [§ Permission profiles](spec/runners.md#permission-profiles), [§ Run context](spec/runners.md#run-context) (first-pass Coder, Reviewer and Docs prompts, `probe`), [§ Verdict schema](spec/runners.md#verdict-schema), [§ Adapter interface](spec/runners.md#adapter-interface) capability gating; [config.md § Validation](spec/config.md#validation) Adapter checks, shown in the add-project flow; usage reporting in the `board` query and the board's subscription usage control. [ADR-0004] [ADR-0016] (schema only) [ADR-0017] [ADR-0018] [ADR-0021] (classification only) [ADR-0024] [ADR-0030].
 
 **Delivers:**
 - `adapter-claude-code`: `detect()`, the flag mapping re-checked against the installed Claude Code (2.1.296 at planning time), stream parsing, classification, `stop()`.
 - Recorded fixtures for every classification, and `pnpm test:live` to re-record them.
 - Built-in prompt templates, including the Docs task's, and `prompt.md` written before every agent Run.
-- `segno serve` wires the real Adapter.
+- The app wires the real Adapter into `startHost`.
 
 **Seams:** S5, plus live.
 
 **Exit check (`pnpm check:b5`):** Replayed fixtures classify `completed`, `failed`, `crashed` and `rate-limited` (with and without `resetAt`) correctly, and the replay stub's argv matches the runners.md flag table.
-**Live (`pnpm check:b5:live`, developer-triggered, uses the developer's Claude subscription):** in a throwaway repo, a one-Task Plan reaches `done` with the real `claude`. `prompt.md` contains exactly the Run-context ingredients. Fixtures are re-recorded against the installed version.
+**Live (`pnpm check:b5:live`, developer-triggered, uses the developer's Claude subscription):** in a throwaway repo added as a Project, a one-Task Plan reaches `done` with the real `claude`. `prompt.md` contains exactly the Run-context ingredients. Fixtures are re-recorded against the installed version.
 
 **Note:** if the installed Claude Code's flags differ from runners.md, the difference is raised and recorded as an ADR before the mapping changes.
 
 ## B6: Failure paths
 
-**Implements:** [engine.md § Automatic transitions](spec/engine.md#automatic-transitions) failure rows (test failure, reject, malformed Verdict, merge re-test failure, merge conflict, infra failure) and the budget rule; [§ Blocked Tasks and their dependents](spec/engine.md#blocked-tasks-and-their-dependents); [§ Findings](spec/engine.md#findings); [§ Verdict handling](spec/engine.md#verdict-handling) with repair; [§ Infra failures](spec/engine.md#infra-failures) with backoff; `held` with `task.approve` and `task.sendBack`; the `merge-hold` and `blocked` Awaiting-you items. [runners.md § Timeouts](spec/runners.md#timeouts), [§ Run context](spec/runners.md#run-context) later Coder passes (blocking Findings, test log tail, conflicting files) and re-review. [cli.md](spec/cli.md) `task approve`, `task send-back`. [ADR-0005] [ADR-0011] [ADR-0014] [ADR-0015] [ADR-0016] [ADR-0019] [ADR-0024] [ADR-0029].
+**Implements:** [engine.md § Automatic transitions](spec/engine.md#automatic-transitions) failure rows (test failure, reject, malformed Verdict, merge re-test failure, merge conflict, infra failure) and the budget rule; [§ Blocked Tasks and their dependents](spec/engine.md#blocked-tasks-and-their-dependents); [§ Findings](spec/engine.md#findings); [§ Verdict handling](spec/engine.md#verdict-handling) with repair; [§ Infra failures](spec/engine.md#infra-failures) with backoff; `held` with `task.approve` and `task.sendBack`; the `merge-hold` and `blocked` Awaiting-you items. [runners.md § Timeouts](spec/runners.md#timeouts), [§ Run context](spec/runners.md#run-context) later Coder passes (blocking Findings, test log tail, conflicting files) and re-review. [gui.md](spec/gui.md): the Blocked column, Block reason, budget and wait-reason badges, the high-risk badge, the drawer's Review tab, and the Approve and Send back actions with their Awaiting-you items. [ADR-0005] [ADR-0011] [ADR-0014] [ADR-0015] [ADR-0016] [ADR-0019] [ADR-0024] [ADR-0028] [ADR-0029].
 
-**Seams:** S2, S3, S7.
+**Seams:** S2, S3, S9.
 
-**Exit check (`pnpm check:b6`):** A scenario matrix where `segno status` shows the expected Block reason and budgets at each step: 2 rejects → `review-limit`; 2 failing test runs → `test-limit`; 3 malformed Verdicts, repaired by resume → `verdict-invalid`; 3 crashes, backed off 30 s / 2 min / 5 min → `infra-limit`; 3 failed setup Runs → `setup-failed`; a Coder timeout and an idle timeout count as infra failures; a high-risk Task (from the Plan, or raised by a Verdict) → `held` → `task approve` lands it; `task send-back` returns it to `coding`; a merge conflict → `coding` with the files listed; a dependent of a Blocked Task stays `waiting` with its wait reason.
+**Exit check (`pnpm check:b6`):**
+- **S3 matrix**, with the `board` State showing the expected Block reason and budgets at each step:
+  - 2 rejects → `review-limit`
+  - 2 failing test runs → `test-limit`
+  - 3 malformed Verdicts, repaired by resume → `verdict-invalid`
+  - 3 crashes, backed off 30 s / 2 min / 5 min → `infra-limit`
+  - 3 failed setup Runs → `setup-failed`
+  - a Coder timeout and an idle timeout count as infra failures
+  - a high-risk Task (from the Plan, or raised by a Verdict) → `held` → `task.approve` lands it
+  - `task.sendBack` returns it to `coding`
+  - a merge conflict → `coding` with the files listed
+  - a dependent of a Blocked Task stays `waiting` with its wait reason
+- **S9:** a `held` Task is approved from Awaiting you and reaches Done. A Blocked card shows its Block reason and budgets.
 
 ## B7: Developer Task Commands
 
-**Implements:** [engine.md § Developer Commands on a Task](spec/engine.md#developer-commands-on-a-task) not covered in B6: `task.note`, `task.pause`/`task.resume`, `task.stopRetry`, `task.takeOver`/`task.handBack`, `task.retry`, `task.replan`, `task.split`, `task.forceApprove`; diff-line Findings in `/api/tasks/:id/diff`; [api.md § Local actions](spec/api.md#local-actions). [cli.md](spec/cli.md) the matching `task` commands, local fragment validation, and `task open`. [ADR-0011] [ADR-0014] [ADR-0015] [ADR-0025].
+**Implements:** [engine.md § Developer Commands on a Task](spec/engine.md#developer-commands-on-a-task) not covered in B6: `task.note`, `task.pause`/`task.resume`, `task.stopRetry`, `task.takeOver`/`task.handBack`, `task.retry`, `task.replan`, `task.split`, `task.forceApprove`; diff-line Findings in the `taskDiff` query; [api.md § Local actions](spec/api.md#local-actions). [gui.md](spec/gui.md) § Card actions, diff-line notes, and fragment validation before sending. [ADR-0011] [ADR-0014] [ADR-0015] [ADR-0025].
 
-**Seams:** S2, S3, S7.
+**Seams:** S2, S3, S9.
 
-**Exit check (`pnpm check:b7`):** From Blocked Tasks set up as in B6: `retry` resets only the exhausted budget and its note becomes a blocking Finding. `replan` gives a new revision, full budgets and a fresh worktree from the Phase branch tip. `split` supersedes the original and re-points dependents and the Docs task at every new Task. Invalid fragments exit 2 locally. `force-approve` requires a reason, skips `held`, and still re-tests. `take-over`/`hand-back` commits leftovers as `segno: developer changes` and re-enters at `testing`. `note` appears in the next Coder prompt. `pause`/`resume` and `stop-retry` rerun the step with no budget used. `task open` runs the configured `editor`, or exits 2.
+**Exit check (`pnpm check:b7`):**
+- **S3,** from Blocked Tasks set up as in B6:
+  - `retry` resets only the exhausted budget, and its note becomes a blocking Finding.
+  - `replan` gives a new revision, full budgets and a fresh worktree from the Phase branch tip.
+  - `split` supersedes the original and re-points dependents and the Docs task at every new Task.
+  - `force-approve` requires a reason, skips `held`, and still re-tests.
+  - `take-over`/`hand-back` commits leftovers as `segno: developer changes` and re-enters at `testing`.
+  - `note` appears in the next Coder prompt.
+  - `pause`/`resume` and `stop-retry` rerun the step with no budget used.
+- **S9:**
+  - An invalid split fragment shows its errors and sends nothing.
+  - A diff-line note shows as an open blocking Finding.
+  - **Open worktree** runs the configured editor (a recording stub), or shows `no-editor`.
 
-## B8: Resilience
+## B8: Resilience, tray and notifications
 
-**Implements:** [engine.md § Pause, pause all and rate limits](spec/engine.md#pause-pause-all-and-rate-limits), [§ Watchdog](spec/engine.md#watchdog), [§ Startup recovery and shutdown](spec/engine.md#startup-recovery-and-shutdown); [store.md § Retention](spec/store.md#retention), [§ Recovery guarantees](spec/store.md#recovery-guarantees) (including stale git cleanup); [config.md § Changes while running](spec/config.md#changes-while-running) and `config.setModel`. [cli.md](spec/cli.md) `pause`, `resume`, `model`, `prune`; "transcript pruned" in `task logs` and `410` in the API. [ADR-0014] [ADR-0020] [ADR-0021] [ADR-0025] [ADR-0033].
+**Implements:** [engine.md § Pause, pause all and rate limits](spec/engine.md#pause-pause-all-and-rate-limits) (including the pause shared by every Project), [§ Watchdog](spec/engine.md#watchdog), [§ Startup recovery and shutdown](spec/engine.md#startup-recovery-and-shutdown); [store.md § Retention](spec/store.md#retention), [§ Recovery guarantees](spec/store.md#recovery-guarantees) (including stale git cleanup); [config.md § Changes while running](spec/config.md#changes-while-running) and `config.setModel`. [gui.md](spec/gui.md): Pause all / Resume all, the rate-limit banner, the config warning, § Tray and notifications, § Settings (notifications, start at login, Prune runs now), and "transcript pruned". [ADR-0014] [ADR-0020] [ADR-0021] [ADR-0025] [ADR-0033] [ADR-0040] [ADR-0041].
 
-**Seams:** S3, S7.
+**Seams:** S3, S6, S9, plus live.
 
-**Exit check (`pnpm check:b8`):** Killing the server with `kill -9` mid-`coding` and restarting: the Run is `interrupted`, the step reruns with no budget used, and the Coder resumes its session. A dead Run process → `watchdog.corrected` plus an infra failure. SIGTERM records live Runs `interrupted` and exits cleanly. A `rate-limited` outcome pauses that Adapter's agent Runs while test Runs continue; it lifts at `resetAt + 60 s`, or probes at 5, 15 and 30 min, then hourly. `segno pause`/`resume` keep individually paused Tasks paused. A bad config edit → `config.rejected` and the old config stays; a good edit → `config.changed` for the next Run. `segno model` writes only `config.local.json`. `segno prune --older-than 0` → "transcript pruned", Verdicts intact. `concurrency: 2` is rejected.
+**Exit check (`pnpm check:b8`):**
+- **S6:**
+  - Killing the host with `kill -9` mid-`coding` and restarting: the Run is `interrupted`, the step reruns with no budget used, and the Coder resumes its session.
+  - A dead Run process → `watchdog.corrected` plus an infra failure.
+  - With two Projects, a `rate-limited` outcome in A records `ratelimit.paused` in both logs and stops both Projects' agent Runs, while test Runs continue. It lifts in both at `resetAt + 60 s`, or probes from A at 5, 15 and 30 min, then hourly.
+  - A shutdown records live Runs `interrupted`.
+  - A bad config edit → `config.rejected`, and the old config stays. A good edit → `config.changed` for the next Run.
+  - `config.setModel` writes only the Project's `local.json`.
+  - `store.prune { olderThanDays: 0 }` → `pruned` from `runTranscript`, with Verdicts intact.
+  - `concurrency: 2` is rejected.
+- **S3:** pause all and resume all keep individually paused Tasks paused.
+- **S9:**
+  - Closing the window keeps a Run going, and reopening shows it.
+  - **Quit** with a live Run asks for confirmation, then records it `interrupted`.
+  - A new Awaiting-you item reaches the notification port once, and not while the window is focused.
+
+**Live (`pnpm check:b8:live`, developer-triggered):** on Linux (and macOS when available), by hand: the tray icon shows the total count, a native notification appears for a new item and its click opens it, and start at login works.
 
 ## B9: GitHub forge and multi-Phase
 
-**Implements:** [engine.md § Phase lifecycle](spec/engine.md#phase-lifecycle) rows from `active` onward, [§ Phase PR](spec/engine.md#phase-pr) (body, `pr-manual` fallback, merge detection every 60 s), Plan `complete`; the `pr-ready`, `pr-manual` and `pr-closed` Awaiting-you items. [cli.md](spec/cli.md) `phase merged`, `phase reopen-pr`, and the PR link in `status`. [ADR-0001] [ADR-0013] [ADR-0023] [ADR-0029].
+**Implements:** [engine.md § Phase lifecycle](spec/engine.md#phase-lifecycle) rows from `active` onward, [§ Phase PR](spec/engine.md#phase-pr) (body, `pr-manual` fallback, merge detection every 60 s), Plan `complete`; the `pr-ready`, `pr-manual` and `pr-closed` Awaiting-you items. [gui.md](spec/gui.md) the PR link in the header, those items' actions (Confirm merged, Reopen PR, Abandon plan), and § History with replay. [ADR-0001] [ADR-0013] [ADR-0023] [ADR-0029].
 
-**Seams:** S3 (fake Forge), S7, S8, plus live.
+**Seams:** S3 (fake Forge), S8, S9, plus live.
 
-**Exit check (`pnpm check:b9`):** With the replay-stub `gh`: Phase 1 done → branch pushed to the bare remote, PR opened with every required body section, `pr-ready`. The stub reports `MERGED` → Phase 2 starts from the remote base. No `gh` → `pr-manual` → `segno phase merged`. `CLOSED` → `pr-closed` → `segno phase reopen-pr`. The Plan ends `complete`.
+**Exit check (`pnpm check:b9`):**
+- **S3 and S8,** with the replay-stub `gh`:
+  - Phase 1 done → the branch is pushed to the bare remote, and a PR is opened with every required body section, then `pr-ready`.
+  - The stub reports `MERGED` → Phase 2 starts from the remote base.
+  - No `gh` → `pr-manual` → `phase.confirmMerged`.
+  - `CLOSED` → `pr-closed` → `phase.reopenPr`.
+  - The Plan ends `complete`.
+- **S9:** **Confirm merged** on a `pr-manual` item starts the next Phase. History replays the finished Phase.
+
 **Live (`pnpm check:b9:live`, developer-triggered):** the same flow with the real `gh` against the sandbox GitHub repo, using the fake Adapter so it costs no agent time.
 
-## B10: `segno init` and v1 release
+## B10: Packaging and v1 release
 
-**Implements:** [cli.md](spec/cli.md) `segno init [--yes] [--force]`; [ADR-0034] bundling and publishing; [ADR-0035] catalog freeze; [spec/README.md § v1 cut line](spec/README.md#v1-cut-line) as the acceptance list. [ADR-0004] [ADR-0023] [ADR-0025] [ADR-0029] [ADR-0030] [ADR-0031].
+**Implements:** [cli.md § Installing](spec/cli.md#installing) and `cli.install`; [ADR-0043] packaging, signing, auto-update and publishing; [ADR-0035] catalog freeze; [spec/README.md § v1 cut line](spec/README.md#v1-cut-line) as the acceptance list. [ADR-0030] [ADR-0031] [ADR-0042] [ADR-0043].
 
-**Seams:** S7, plus live.
+**Seams:** S7, S9, plus live.
 
-**Exit check (`pnpm check:b10`):** `segno init --yes` on pnpm and npm fixture repos writes the expected config, the `.gitignore` entry and the Coder's `Bash(<pm> *)`. A second run exits 2, and `--force` overwrites. It warns when `gh` is missing or logged out. The tarball's only runtime dependency is `better-sqlite3`, and it installs on Node 22 and 24.
-**Live, the v1 acceptance run (`pnpm check:b10:live`, developer-triggered):** from the tarball, with the real `claude` and `gh` on the sandbox repo, a two-Phase Plan → two Phase PRs that the developer merges → Plan `complete`.
+**Exit check (`pnpm check:b10`):**
+- electron-builder produces the AppImage and .deb on Linux, and CI produces the .dmg on a macOS runner.
+- S9 passes against the packaged Linux app.
+- `cli.install` writes the launcher into a temp PATH directory, and `segno plan validate` runs through it.
+- The updater's feed points at the repo's GitHub Releases.
 
-**Release steps, in order:** freeze the Event catalog [ADR-0035]; `CHANGELOG.md` `Unreleased` → `1.0.0`; `npm publish`, only on the developer's explicit go [ADR-0034].
+**Live, the v1 acceptance run (`pnpm check:b10:live`, developer-triggered):**
+- From the packaged app, with the real `claude` and `gh` on the sandbox repo, a two-Phase Plan → two Phase PRs that the developer merges → Plan `complete`.
+- The macOS build passes Gatekeeper.
+- Auto-update moves the app from one prerelease to a newer one, both published only on the developer's go.
 
-**Docs:** adds `docs/guides/plan-file.md` and `docs/guides/cli.md`, and rewrites the README for installing from npm.
+**Release steps, in order:** freeze the Event catalog [ADR-0035]; `CHANGELOG.md` `Unreleased` → `1.0.0`; publish the GitHub Release, only on the developer's explicit go [ADR-0043].
+
+**Docs:** adds `docs/guides/plan-file.md` and `docs/guides/app.md`, and rewrites the README for installing from GitHub Releases.
 
 ---
 
@@ -216,12 +303,14 @@ Every build phase's PR updates, as relevant:
 | Needed by | What |
 |---|---|
 | B5, B10 live checks | the developer's Claude subscription, with `claude` logged in |
+| B8 live check | a Linux desktop session (WSLg works); a Mac for the macOS part when available |
 | B9, B10 live checks | a sandbox GitHub repo (e.g. `jeio-dev/segno-sandbox`) and `gh` logged in. Creating the repo is outward-facing, so the developer does it or explicitly asks for it |
-| B10 release | an npm account that owns the `segno` name (unclaimed at planning time) |
+| B10 | an Apple Developer Program membership, with its signing certificate and notarization credentials stored as GitHub Actions secrets [ADR-0043] |
+| B10 release | the developer's explicit go to publish each GitHub Release, prereleases included [ADR-0043] |
 
 ## Event shape changes
 
-Changes to an existing Event's shape before the first release [ADR-0035]. Delete local `.segno/segno.db` files after pulling any of these.
+Changes to an existing Event's shape before the first release [ADR-0035]. Delete local Event logs (`projects/<id>/segno.db` in the app data directory) after pulling any of these.
 
 | Build phase | Event `type` | Change |
 |---|---|---|

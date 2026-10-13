@@ -1,3 +1,7 @@
+---
+status: accepted, amended by ADR-0041
+---
+
 # The watchdog repairs invariant violations, and restarts never use budget
 
 Every 30 s the Watchdog checks that each non-terminal Task has what its state requires: a live Run for active states, a startable slot or a visible reason for `ready`, an unfinished dependency for `waiting`, and an Awaiting-you item or developer ownership for held, blocked and taken-over. It corrects any violation (a dead process counts as a crash and uses infra budget; a startable Task is started) and records an Event for each correction. On `segno serve`, Runs that were live are recorded as `interrupted`, any leftover processes are killed, and the step reruns without using any budget. Coder Runs resume their agent session when the Adapter supports it. On SIGINT or SIGTERM, Segno stops live Runs, records them as interrupted and exits.

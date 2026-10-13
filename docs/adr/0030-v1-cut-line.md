@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0042
+---
+
 # v1 is the headless core with the CLI as its only interface
 
 v1 includes:

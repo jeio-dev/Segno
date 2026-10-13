@@ -1,0 +1,3 @@
+# The app stays in the tray, notifies natively, and Quit shuts down cleanly
+
+Closing the window leaves Segno running in the tray, with its Engines working; the tray icon shows the Awaiting-you count. Quitting from the tray or the menu does what SIGINT or SIGTERM did in ADR-0020: live Runs are stopped and recorded as `interrupted`, and they rerun on the next start without using budget. Each new Awaiting-you item raises one native OS notification, showing the item kind, Task id and title, never code, and nothing fires while the window is focused. This supersedes ADR-0027. Starting Segno at login is an opt-in setting, off by default; a Plan left mid-flight resumes through restart recovery whenever the app next starts.
