@@ -1,0 +1,57 @@
+/*
+ * Segno design tokens, copied from the Visual identity section of docs/product-brief.md.
+ * The only change: the prefers-color-scheme block is filled in with the [data-theme="dark"]
+ * values, where the brief said "same values as [data-theme="dark"]".
+ * Usage rules: docs/spec/gui.md, section Visual rules.
+ */
+:root {
+  /* neutrals */
+  --bg: #E9ECF0; --surface: #F6F7F9; --raised: #FFFFFF;
+  --ink: #141B24; --muted: #536070; --line: #CBD2DB; --line-soft: #E1E5EB;
+  /* accent: primary actions, selection, task IDs */
+  --accent: #2D4BD8; --accent-ink: #FFFFFF;
+  /* status */
+  --ok: #17855A; --bad: #B3261E; --warn: #8A5608; --info: #2D4BD8;
+  --blocked-bg: #F8E9E7;
+  /* roles: dots and labels only */
+  --planner: #6A4BD1; --coder: #0B7A84; --reviewer: #9C620C; --tests: #536070; --you: #2D4BD8;
+  /* terminal panels: transcripts, test output */
+  --term-bg: #141B24; --term-fg: #DCE3EC; --term-dim: #7F8B9C; --term-accent: #93A7FF;
+  /* derived tints */
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --ok-soft: color-mix(in srgb, var(--ok) 14%, transparent);
+  --bad-soft: color-mix(in srgb, var(--bad) 14%, transparent);
+  --warn-soft: color-mix(in srgb, var(--warn) 14%, transparent);
+  --diff-add: color-mix(in srgb, var(--ok) 11%, var(--raised));
+  --diff-del: color-mix(in srgb, var(--bad) 11%, var(--raised));
+  /* type */
+  --font-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  /* shape */
+  --r-chip: 4px; --r-btn: 8px; --r-card: 8px; --r-col: 10px; --r-panel: 12px; --r-dialog: 14px;
+  --control-h: 40px;
+  /* motion */
+  --ease-move: cubic-bezier(.3, .7, .2, 1); --dur-move: 560ms; --pulse: 1.2s;
+}
+:root[data-theme="dark"] {
+  --bg: #0F1319; --surface: #161B23; --raised: #1D232D;
+  --ink: #E5EAF1; --muted: #98A3B3; --line: #2C3440; --line-soft: #242B35;
+  --accent: #8299FF; --accent-ink: #0F1319;
+  --ok: #4DC48D; --bad: #F2716A; --warn: #E6A94B; --info: #8299FF;
+  --blocked-bg: #2A1818;
+  --planner: #A690F7; --coder: #42C3CD; --reviewer: #E6A94B; --tests: #98A3B3; --you: #8299FF;
+  --term-bg: #090C11; --term-fg: #DCE3EC; --term-dim: #778294; --term-accent: #93A7FF;
+}
+/* Dark is the default when the OS asks for it, unless the user picked light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F1319; --surface: #161B23; --raised: #1D232D;
+    --ink: #E5EAF1; --muted: #98A3B3; --line: #2C3440; --line-soft: #242B35;
+    --accent: #8299FF; --accent-ink: #0F1319;
+    --ok: #4DC48D; --bad: #F2716A; --warn: #E6A94B; --info: #8299FF;
+    --blocked-bg: #2A1818;
+    --planner: #A690F7; --coder: #42C3CD; --reviewer: #E6A94B; --tests: #98A3B3; --you: #8299FF;
+    --term-bg: #090C11; --term-fg: #DCE3EC; --term-dim: #778294; --term-accent: #93A7FF;
+  }
+}
