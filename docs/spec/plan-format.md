@@ -1,6 +1,6 @@
 # Plan file format
 
-The Plan file is Segno's public contract. A person, Segno's own Planner, or any other tool can write one [brief §Starting point] [ADR-0002]. This document is the normative definition. A JSON Schema equivalent to it ships with Segno, so writers can validate a Plan without running Segno [ADR-0002].
+The Plan file is Segno's public contract. A person, Segno's own Planner, or any other tool can write one [brief §Starting point] [ADR-0002]. This document is the normative definition. A JSON Schema of its structure ships with Segno, so writers can validate a Plan without running Segno [ADR-0002]. The schema can't check rules that compare one value with another, so `duplicate-id`, `unknown-dependency`, `cross-phase-dependency`, `dependency-cycle` and `reserved-id` are checked only by Segno [ADR-0036].
 
 ## Encoding
 
@@ -68,11 +68,11 @@ Segno adds one Docs task to every Phase. Plan authors never write it [ADR-0011] 
 | `risk` | none, unless a Reviewer raises one [ADR-0016] |
 | Role | Coder, using `roles.coder.docsModel` [ADR-0018] |
 
-`segno plan export` writes Docs tasks out with `generated: true`. Submitting a file that contains a task with `generated: true` is rejected, so export is lossless for reading, and a Plan can't be resubmitted with its Docs tasks already in it [ADR-0011] [ADR-0012].
+Exporting a Plan writes Docs tasks out with `generated: true`. Submitting a file that contains a task with `generated: true` is rejected, so export is lossless for reading, and a Plan can't be resubmitted with its Docs tasks already in it [ADR-0011] [ADR-0012].
 
 ## Validation
 
-Validation is the same everywhere it happens: `segno plan validate` (offline), the `plan.submit` Command, and the fragment checks below [ADR-0002] [ADR-0012].
+Validation is the same everywhere it happens: `segno plan validate` (offline), the `plan.submit` Command, and the fragment checks below [ADR-0002] [ADR-0012] [ADR-0042].
 
 A validation result is either valid or a list of errors. Each error has:
 
@@ -121,7 +121,7 @@ Fragments are validated with the same codes as above, plus:
 
 ## Export
 
-`segno plan export` writes the active Plan in its current form (after replans and splits) in this schema [ADR-0012]:
+**Export Plan** in the app (the `planExport` query, [api.md](api.md#queries)) writes the active Plan in its current form (after replans and splits) in this schema [ADR-0012]:
 
 - Superseded Tasks are left out.
 - Docs tasks are written with `generated: true`.

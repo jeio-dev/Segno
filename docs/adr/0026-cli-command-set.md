@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0039 and ADR-0042
+---
+
 # CLI command set and exit codes
 
 The CLI is a thin client of the running server. Only `init`, `serve` and `plan validate` work without one. It covers:

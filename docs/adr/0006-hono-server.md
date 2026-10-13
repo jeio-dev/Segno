@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0037
+---
+
 # Hono for the local server
 
 The server only serves a JSON command and query API, Server-Sent Events and the built GUI to one local user, so throughput doesn't matter. We chose Hono (on `@hono/node-server`) because its typed client gives both the CLI and the GUI end-to-end types from the same route definitions and zod schemas, with no codegen. It also has a built-in SSE helper.

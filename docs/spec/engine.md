@@ -1,12 +1,12 @@
 # Engine
 
-The Engine is the only component that decides state changes, and the only writer of the Event log [brief §Decided] [glossary]. The GUI, the CLI and agent output never move a Task. They send Commands or produce Run outcomes, and the Engine either validates each one into Events or rejects it [brief §Principles].
+The Engine is the only component that decides state changes, and the only writer of the Event log [brief §Decided] [glossary]. Each Project has its own Engine and Event log, all run by one Engine host ([api.md](api.md)) [ADR-0037] [ADR-0038]. The GUI and agent output never move a Task. They send Commands or produce Run outcomes, and the Engine either validates each one into Events or rejects it [brief §Principles].
 
 ## Processing model
 
 - Commands and Run outcomes are processed **one at a time, in arrival order**. Each is handled atomically: either all of its Events are appended in one transaction, or nothing is [brief §Decided] [ADR-0022].
 - A rejected Command appends **no** Event and returns a rejection code ([Rejection codes](#rejection-codes)) [ADR-0022].
-- All state (Plans, Phases, Tasks, Runs, Awaiting you, pause state) is derived by a pure reducer over the Event log. The Engine, GUI, CLI and History replay share one reducer [ADR-0007].
+- All state (Plans, Phases, Tasks, Runs, Awaiting you, pause state) is derived by a pure reducer over the Event log. The Engine, GUI and History replay share one reducer [ADR-0007].
 - Run outcomes are internal inputs. Agents and scripts can't send Commands [brief §Principles].
 
 ## Plan lifecycle
@@ -23,7 +23,7 @@ States: `awaiting-approval`, `active`, `complete`, `returned`, `abandoned` [ADR-
 | `active` | last Phase `merged` | `complete` (terminal) | archived to History |
 | `active` or `awaiting-approval` | `plan.abandon` (reason required) | `abandoned` (terminal) | all live Runs stopped. Every non-`done` Task → `superseded`, and its worktree and Task branch are deleted. Phase branches are kept. Segno never closes a PR [ADR-0013] |
 
-The **plan slug** comes from `title`: lower-cased, with each run of characters outside `[a-z0-9]` replaced by `-`, trimmed, and truncated to 40 characters. If a slug is already taken by any Plan in this repo's Event log, `-2`, `-3`, … is appended [ADR-0033].
+The **plan slug** comes from `title`: lower-cased, with each run of characters outside `[a-z0-9]` replaced by `-`, trimmed, and truncated to 40 characters. If a slug is already taken by any Plan in this Project's Event log, `-2`, `-3`, … is appended [ADR-0033].
 
 ## Phase lifecycle
 
@@ -159,10 +159,12 @@ Interruptions (restart, pause, stop and retry, a Rate-limit pause) are **not** i
 
 - **`board.pause`** sets the pause flag on every non-terminal Task, and **`board.resume`** clears it everywhere. Tasks the developer paused individually stay paused [ADR-0014] [brief §The GUI].
 - **Rate-limit pause** [ADR-0021]:
-  - When a Run outcome is `rate-limited`, the Engine stops every live agent Run of **that Adapter** (recorded `interrupted`) and records `ratelimit.paused { adapter, resetAt?, nextCheckAt }`.
+  - The pause is shared by every Project, because agent subscriptions belong to the developer, not the repo [ADR-0040].
+  - When a Run outcome is `rate-limited`, every Project's Engine stops its live agent Runs of **that Adapter** (recorded `interrupted`) and records `ratelimit.paused { adapter, resetAt?, nextCheckAt }` in its own Event log.
   - Test, setup and merge Runs continue.
-  - It lifts at `resetAt + 60 s`. Without a `resetAt`, the Engine starts a minimal probe Run after 5, 15 and 30 minutes, then every 60. A probe that isn't rate-limited lifts the pause, and one that is schedules the next check.
-  - Lifting reruns each interrupted step. No budget is used.
+  - It lifts at `resetAt + 60 s`. Without a `resetAt`, the Project whose Run hit the limit starts a minimal probe Run after 5, 15 and 30 minutes, then every 60. A probe that isn't rate-limited lifts the pause, and one that is schedules the next check.
+  - Lifting records `ratelimit.lifted { adapter }` in every Project's Event log and reruns each interrupted step. No budget is used.
+  - A Project whose Engine starts while a pause is on records it in its own log, with the shared `resetAt` and `nextCheckAt`.
 
 ## Watchdog
 
@@ -185,7 +187,8 @@ Each correction records `watchdog.corrected { taskId, violation, action }` [ADR-
   - Every Run that was live becomes `interrupted` and its leftover process is killed.
   - Each interrupted step reruns with no budget used. Coder Runs resume their agent session if the Adapter has `resume`, prefixed with a notice to check the worktree and continue. Otherwise they start fresh on the same worktree.
   - Due timers (backoffs, deferred Phase starts, rate-limit lifts) fire immediately when already past.
-- **SIGINT or SIGTERM** stops live Runs, records them as `interrupted`, flushes, and exits [ADR-0020].
+- **Startup** happens when the app launches, and for one Project when it's added or located ([api.md](api.md#app-level-calls)) [ADR-0038].
+- **Shutdown.** Quitting the app, or SIGINT or SIGTERM, stops live Runs in every Project, records them as `interrupted`, flushes, and exits. Closing the window is not a shutdown [ADR-0020] [ADR-0041].
 
 ## Awaiting you
 
@@ -201,11 +204,11 @@ The Awaiting-you queue is derived state. Its item kinds are [brief §Where the d
 | `pr-closed` | PR closed without merging | `phase.reopenPr`, `plan.abandon` |
 | `planning-reply` **(v1.2)** | a Planner turn finished in a Planning session | `planning.reply`, `planning.draftNow`, `planning.discard` |
 
-Each item's id is the `seq` of the Event that created it. Notifications key on that id [ADR-0027].
+Each item's id is the `seq` of the Event that created it. Notifications key on the Project and that id [ADR-0041].
 
 ## Commands
 
-Every Command is `{ type, ...payload }` and is validated by zod at the API boundary and again by the Engine for state [ADR-0022].
+Every Command is `{ type, ...payload }`, sent to one Project's Engine. It's validated by zod at the host boundary and again by the Engine for state [ADR-0022] [ADR-0037].
 
 | `type` | Payload | Version |
 |---|---|---|
@@ -236,7 +239,7 @@ Every Command is `{ type, ...payload }` and is validated by zod at the API bound
 | `task.askPlanner` | `{ taskId, text?: string }` | v1.2 |
 | `task.applyPlannerAdvice` | `{ taskId, adviceId }` | v1.2 |
 
-Sources: [ADR-0013] [ADR-0015] [ADR-0021] [ADR-0023] [ADR-0025] [ADR-0026] [ADR-0010] [ADR-0030].
+Sources: [ADR-0013] [ADR-0015] [ADR-0021] [ADR-0023] [ADR-0025] [ADR-0010] [ADR-0030] [ADR-0042].
 
 ### Rejection codes
 

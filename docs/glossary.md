@@ -2,10 +2,16 @@
 
 Segno is a local app that drives a small team of AI agents through a software development cycle while the developer supervises. This glossary fixes the words used across the spec, code and UI.
 
+## Projects
+
+**Project**:
+A git repo added to Segno, with its own Plans, board, Event log and settings. One app holds many Projects, and each repo can be added only once.
+_Avoid_: workspace (that is the pnpm workspace), repo (when the Segno-side record is meant), plan
+
 ## Planning
 
 **Plan**:
-The developer-approved scope for one feature, expressed as an ordered list of Phases. A repo has at most one active Plan.
+The developer-approved scope for one feature, expressed as an ordered list of Phases. A Project has at most one active Plan.
 _Avoid_: project, roadmap, epic
 
 **Plan file**:
@@ -13,7 +19,7 @@ A YAML document in Segno's published format that describes a Plan for submission
 _Avoid_: calling the file "the plan"; plan spec, manifest
 
 **Planning session**:
-A turn-based conversation between the developer and the Planner that ends in a drafted Plan. Each developer message starts one Planner Run. At most one exists per repo, and only while no Plan is active.
+A turn-based conversation between the developer and the Planner that ends in a drafted Plan. Each developer message starts one Planner Run. At most one exists per Project, and only while no Plan is active.
 _Avoid_: planning chat (in names), brainstorm, draft
 
 **Phase**:
@@ -109,7 +115,7 @@ A flag that stops a Task's live process and holds it in its current state. The i
 _Avoid_: suspend, freeze
 
 **Rate-limit pause**:
-A Pause that Segno applies to every agent Run of one Adapter when that Adapter reports a usage limit. It lifts automatically at the reset time and never uses any budget.
+A Pause that Segno applies to every agent Run of one Adapter, in every Project, when that Adapter reports a usage limit. It lifts automatically at the reset time and never uses any budget.
 _Avoid_: throttle, cooldown, backoff
 
 **Superseded**:
@@ -190,8 +196,12 @@ _Avoid_: tester, QA agent
 The single component that decides every state change. It is the only writer of the Event log.
 _Avoid_: orchestrator (allowed in prose, not in names), scheduler, server
 
+**Engine host**:
+The one background process of the app that runs an Engine for every Project and answers the GUI over IPC.
+_Avoid_: server, backend, daemon
+
 **Command**:
-A request from the developer (via GUI or CLI), or a Run's outcome, asking the Engine for a change. The Engine either accepts it and appends Events, or rejects it with a reason and writes nothing.
+A request from the developer (via the GUI), or a Run's outcome, asking the Engine for a change. The Engine either accepts it and appends Events, or rejects it with a reason and writes nothing.
 _Avoid_: action, request, mutation
 
 **Event**:
@@ -199,5 +209,5 @@ One immutable, sequence-numbered record in the Event log describing something th
 _Avoid_: message, log entry, activity
 
 **Event log**:
-The append-only record of every Event for a repo, kept forever. It is the source of truth for board state, crash recovery and replay.
+The append-only record of every Event for a Project, kept forever. It is the source of truth for board state, crash recovery and replay.
 _Avoid_: history (that is the GUI's view of archived Phases), audit log, journal

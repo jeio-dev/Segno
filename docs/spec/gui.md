@@ -1,8 +1,8 @@
-# GUI **(v1.1; planning views v1.2)**
+# GUI **(planning views v1.2)**
 
-The browser GUI is a React and Vite app served by the local server [brief §Decided]. It is for **watching and stepping in. It does not do the work** [brief §The GUI].
+The GUI is Segno's desktop app window: a React and Vite app rendered by Electron [ADR-0037] [ADR-0042]. It is for **watching and stepping in. It does not do the work** [brief §The GUI].
 
-The GUI is a pure client of the API. It sends Commands, reads queries, and derives state from the Event stream with the Engine's reducer [ADR-0007] [ADR-0022]. Nothing on screen moves a Task by itself: every move is a Command the Engine may reject. A rejection is shown inline with its `message` [brief §Principles] [ADR-0022].
+The GUI is a pure client of the Engine host ([api.md](api.md)). It sends Commands, reads queries, and derives state from the Event stream with the Engine's reducer [ADR-0007] [ADR-0022]. Nothing on screen moves a Task by itself: every move is a Command the Engine may reject. A rejection is shown inline with its `message` [brief §Principles] [ADR-0022].
 
 **The GUI never offers** dragging cards between columns, typing into a running agent, or editing files. Take over and Open worktree cover hands-on work [brief §The GUI].
 
@@ -10,17 +10,37 @@ The GUI is a pure client of the API. It sends Commands, reads queries, and deriv
 
 | Screen | Purpose |
 |---|---|
-| **Board** | the active Phase, with the Awaiting-you panel and global controls |
+| **Projects sidebar** | every Project, always visible, with its Awaiting-you count; selecting one shows its board |
+| **Add project** | the add-project flow |
+| **Board** | the selected Project's active Phase, with the Awaiting-you panel and global controls |
 | **Card drawer** | a side panel over the board for one Task |
 | **History** | archived Phases, read-only and replayable |
 | **Planning** (v1.2) | a Planning session thread |
+| **Settings** | app settings and the selected Project's settings |
 
-Sources: [brief §The GUI] [ADR-0010].
+Sources: [brief §The GUI] [ADR-0010] [ADR-0038] [ADR-0039].
+
+## Projects
+
+- **Sidebar.** Lists every Project from `projects.list` by name, with its Awaiting-you count. **Add project** opens the add-project flow [ADR-0038].
+- **Unavailable Projects.** A Project whose folder is gone, is no longer a git repo, or whose effective config is invalid is shown as unavailable with the reason and every config error. It offers **Locate…** (`projects.locate`) and **Remove**. Its Engine isn't running, and the other Projects are unaffected [ADR-0038].
+- **Remove** asks whether to also delete the Project's Segno data (Event log, Runs and worktrees), then sends `projects.remove`. The repo is never touched [ADR-0038].
+
+## Adding a Project
+
+This follows [ADR-0039].
+
+1. The developer picks a folder. `projects.inspect` refuses a folder that isn't a git top-level (`not-a-repo`), has no remote (`no-remote`) or is already a Project (`already-added`), and the reason is shown.
+2. **With a `segno.config.json`,** its validation result is shown, and **Add** registers the Project as it is.
+3. **Without one,** the detected settings are shown for review and editing: package manager, test command, setup command, base branch, a model per Role (planner, coder, coder-docs, reviewer), and `Bash(<package-manager> *)` in the Coder's `allow`. **Add** writes them as `segno.config.json` and registers the Project.
+4. A missing or logged-out `gh` shows a warning, and adding still works [ADR-0023].
+5. Segno never commits the file. Until `segno.config.json` is on the base branch, the Project shows a hint to commit it.
 
 ## Board
 
-- **Phase scope.** It shows only the active Phase, or the Phase `awaiting-merge` [brief §The GUI]. With no active Plan, it shows an empty state that offers **New plan** (v1.2), or the CLI command `segno plan submit <file>` (v1.1) [ADR-0030].
-- **Header.** It shows the Plan title, the Phase title, the Phase branch name (mono), the Phase state, and the PR link once one is open [brief §Visual identity] [ADR-0023].
+- **Phase scope.** It shows only the active Phase, or the Phase `awaiting-merge` [brief §The GUI]. With no active Plan, it shows an empty state that offers **Submit Plan file…** and **New plan** (v1.2) [ADR-0042].
+- **Submitting a Plan.** **Submit Plan file…** opens a file picker, and a `.yaml` or `.yml` file can also be dropped on the empty state. Either sends `plan.submit { yaml, sourcePath }`. A `validation` rejection lists every error as `line:column  code  message` [ADR-0012] [ADR-0042].
+- **Header.** It shows the Project name, the Plan title, the Phase title, the Phase branch name (mono), the Phase state, and the PR link once one is open, plus **Export Plan…**, which saves the `planExport` query's YAML through a save dialog [brief §Visual identity] [ADR-0023] [ADR-0012].
 
 ### Columns
 
@@ -60,12 +80,12 @@ Each card shows [ADR-0028] [brief §The GUI] [brief §Visual identity]:
 | Control | Effect | Source |
 |---|---|---|
 | Pause all / Resume all | `board.pause` / `board.resume` | [brief §The GUI] |
-| Model settings | per Role (planner, coder, coder-docs, reviewer): shows the effective model and its source; changing it sends `config.setModel`, which writes `config.local.json` only | [brief §The GUI] [ADR-0025] |
+| Model settings | per Role (planner, coder, coder-docs, reviewer): shows the effective model and its source; changing it sends `config.setModel`, which writes the Project's local settings only | [brief §The GUI] [ADR-0025] |
 | Session meter | live agent Runs / `concurrency`, plus agent sessions started in this Phase | [ADR-0028] |
 | Subscription usage | used / limit and reset time, **only** when the Adapter reports usage. Otherwise the last known reset time, or nothing. Never estimated | [ADR-0021] |
-| Rate-limit banner | "Rate-limited until HH:MM" or "Rate-limited, next check HH:MM" while a Rate-limit pause is on | [ADR-0021] |
+| Rate-limit banner | "Rate-limited until HH:MM" or "Rate-limited, next check HH:MM" while a Rate-limit pause is on. The pause is shared by every Project | [ADR-0021] [ADR-0040] |
 | Config warning | shown while a `config.rejected` is unresolved, with its errors | [ADR-0025] |
-| Theme | system / light / dark, stored per browser | [ADR-0032] |
+| Theme | system / light / dark, stored in the app settings | [ADR-0032] [ADR-0037] |
 | History | opens History | [brief §The GUI] |
 
 ## Card drawer
@@ -74,10 +94,10 @@ Its header shows the Task id, title, state, Role dot, budgets, risk, and the act
 
 | Tab | Content |
 |---|---|
-| **Diff** | the Task's diff (`/api/tasks/:id/diff`), with additions on `--diff-add` and deletions on `--diff-del`. Any diff line can take a **note**: the developer types text and submits `task.note`. The note then shows as an open blocking Finding on that line [brief §The GUI] [ADR-0015] |
+| **Diff** | the Task's diff (the `taskDiff` query), with additions on `--diff-add` and deletions on `--diff-del`. Any diff line can take a **note**: the developer types text and submits `task.note`. The note then shows as an open blocking Finding on that line [brief §The GUI] [ADR-0015] |
 | **Review** | every Verdict, newest first: decision, summary, the acceptance checklist (met or unmet, with notes), the docs check, Findings grouped by blocking or advisory and source, and raised risk. Malformed Verdicts are listed with their validation errors [ADR-0016] |
 | **Tests** | every `tests`, `setup` and `merge` Run: exit code as a status badge, duration, and output in a terminal panel [brief §Visual identity] [ADR-0029] |
-| **Transcript** | every agent Run for the Task: Role, model, outcome, and the transcript in a terminal panel. A live Run streams from `/api/runs/:id/stream`. Pruned Runs show "transcript pruned" [brief §The GUI] [ADR-0033] |
+| **Transcript** | every agent Run for the Task: Role, model, outcome, and the transcript in a terminal panel. A live Run streams from `runOutput`. Pruned Runs show "transcript pruned" [brief §The GUI] [ADR-0033] |
 
 The drawer also shows the Task's current definition (description, acceptance, context hints) and, for replanned Tasks, earlier revisions [ADR-0015].
 
@@ -96,14 +116,14 @@ Each action is shown only in the states where the Engine allows it ([engine.md](
 | Split | `task.split` | a list of Task fragments (YAML text, validated before sending) |
 | Force-approve | `task.forceApprove` | reason (text), which is required; submit is disabled while it's blank |
 | Take over / Hand back | `task.takeOver` / `task.handBack` | confirmation |
-| Open worktree | none: the server runs the configured `editor` command on the worktree path | none |
+| Open worktree | none: `openWorktree` runs the `editor` app setting on the worktree path | none |
 | Ask Planner (v1.2) | `task.askPlanner`, then the advice is shown with **Apply** (`task.applyPlannerAdvice`) | optional question |
 
 Typing in these inputs is allowed. Every one of them becomes a Command the Engine validates. None of them reaches a running agent [ADR-0010].
 
 ## Awaiting you
 
-- **Location.** A panel beside the board, listing `/api/awaiting` items oldest first, with a count badge [brief §Where the developer steps in].
+- **Location.** A panel beside the board, listing the selected Project's `awaiting` items oldest first, with a count badge. Other Projects' counts show in the sidebar and their total on the tray icon [brief §Where the developer steps in] [ADR-0041].
 - **Actions.** Each item shows its kind, Task or Plan id, title and age, plus the actions that resolve it [ADR-0013] [ADR-0023]:
   - `plan-approval`: Approve / Send back / Abandon, with the full Plan readable
   - `merge-hold`: Approve / Send back / Take over
@@ -113,24 +133,30 @@ Typing in these inputs is allowed. Every one of them becomes a Command the Engin
   - `planning-reply` (v1.2): opens Planning
 - **Plan review.** A plan to approve renders every Phase and Task, with dependencies and Risk flags, before Approve is enabled [brief §Where the developer steps in].
 
-## Notifications
+## Tray and notifications
 
-These follow [ADR-0027].
+These follow [ADR-0041].
 
-- **Trigger.** A browser notification fires once for each **new** Awaiting-you item, keyed by the id (the creating Event's `seq`).
-- **No notification** for items already present when the page loaded, or while the tab is visible and focused. A focused tab highlights the new item in the panel instead.
-- **One per item across tabs.** Tabs coordinate through a `BroadcastChannel`, and the notification `tag` is the item id.
-- **Permission** is requested only from an explicit **Enable notifications** control, never on load. If it's denied, the panel shows a quiet banner explaining how to re-enable it.
-- **Content:** the item kind (e.g. "Blocked: review-limit"), the Task id and the title. Never code or Findings.
-- **Click** focuses the tab and opens the item.
-- **Without a notification:** the tab title shows the count (`(3) Segno`) and the favicon shows a dot.
-- `notifications: false` in `config.local.json` turns notifications off.
+- **Tray.** Segno has a tray icon showing the total Awaiting-you count across Projects. Its menu offers **Open Segno** and **Quit**.
+- **Closing the window** leaves Segno running in the tray, and every Engine keeps working. **Quit** (tray or app menu) is the shutdown in [engine.md](engine.md#startup-recovery-and-shutdown), after a confirmation when Runs are live.
+- **Trigger.** A native notification fires once for each **new** Awaiting-you item, keyed by its Project and id (the creating Event's `seq`).
+- **No notification** for items already present when the app started, or while the window is focused. A focused window highlights the new item in the sidebar and panel instead.
+- **Content:** the Project name, the item kind (e.g. "Blocked: review-limit"), the Task id and the title. Never code or Findings.
+- **Click** shows the window, selects the Project and opens the item.
+- `notifications: false` in the app settings turns them off. The tray count still updates.
+
+## Settings
+
+| Section | Contents | Source |
+|---|---|---|
+| App | editor command, notifications, theme, start at login (off by default), and **Install the `segno` command** (`cli.install`) | [ADR-0041] [ADR-0042] [ADR-0032] |
+| Project | name, `worktreeRoot`, per-Role models (as in [Global controls](#global-controls)), **Prune runs now** with a days field (`store.prune`), and **Remove project** | [ADR-0038] [ADR-0033] |
 
 ## History
 
-- **Archived Phases** from `/api/phases`, grouped by Plan (complete, abandoned and returned Plans included) [brief §The GUI] [ADR-0013].
+- **Archived Phases** from the `phases` query, grouped by Plan (complete, abandoned and returned Plans included) [brief §The GUI] [ADR-0013].
 - **Read-only.** No actions are offered [brief §The GUI].
-- **Replay.** Loads `/api/phases/:id/events` and rebuilds the board with the shared reducer. A scrubber steps through Events, showing the board as it was at each `seq` [ADR-0007].
+- **Replay.** Loads the `phaseEvents` query and rebuilds the board with the shared reducer. A scrubber steps through Events, showing the board as it was at each `seq` [ADR-0007].
 
 ## Planning (v1.2)
 
@@ -144,8 +170,8 @@ This follows [ADR-0010].
 
 ## Connection state
 
-- **Reconnecting.** If the event stream drops, a banner shows "Reconnecting…". The client reconnects with `Last-Event-ID`, so no Event is missed [ADR-0007].
-- **Restarted server.** If the server restarted, the token changed and requests return `401`. The GUI then shows "Segno restarted. Run `segno open` to reconnect" [ADR-0008].
+- **Host restart.** If the Engine host process dies, the app restarts it once, and the window resubscribes each Event stream with `since` set to its last `seq`, so no Event is missed. A banner shows "Reconnecting…" meanwhile [ADR-0007] [ADR-0037].
+- **Repeated failure.** A second death within 60 s shows an error with **Restart Engine** [ADR-0037].
 
 ## Visual rules
 
@@ -155,7 +181,7 @@ The tokens are in [`../design-tokens.css`](../design-tokens.css). These rules ar
   - Bricolage Grotesque (600 and 800) for the wordmark and headings only.
   - IBM Plex Sans (400, 500 and 600) for interface text.
   - JetBrains Mono for task ids, branch names, counters, commands and logs.
-  - All three are bundled with the GUI and never loaded from a CDN [ADR-0032].
+  - All three are bundled with the app and never loaded from a CDN [ADR-0032].
 - **Accent** marks primary buttons, the selected card and task ids, and nothing else.
 - **Status colors** appear only on badges, Verdicts, exit codes and run-state pills.
 - **Badges** are mono, 10.5px, semibold, on the matching `*-soft` tint.

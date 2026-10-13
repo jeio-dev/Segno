@@ -1,0 +1,9 @@
+# Segno is an Electron desktop app, and its UI talks to one Engine host over IPC
+
+This supersedes two points in the brief's Decided list: "a local Node server plus a browser GUI … No Electron or Tauri" and live updates over SSE [brief §Decided]. Segno is now a desktop app built on Electron, so one app can hold many Projects (ADR-0038), keep working from the tray after its window closes, and raise native notifications (ADR-0041). The UI stays a React and Vite app, rendered in the app's window with no Node access. It talks over Electron IPC (MessagePorts) to a single Engine host, an Electron `utilityProcess` that runs one Engine per open Project. The Command, query and Event-stream shapes in the API spec are unchanged; only the transport is. Nothing listens on a network port, so the token, Host and Origin checks have nothing to protect and are dropped. Clients still derive state with the Engine's reducer (ADR-0007), the stream resumes from a sequence number, and ADR-0022's single Command entry point and plain queries become IPC messages instead of HTTP routes. The fonts stay bundled (ADR-0032), and the theme choice is stored per app instead of per browser. Electron is chosen over Tauri because the Engine needs Node for SQLite, git and spawning agent CLIs, which Tauri would only reach through a Node sidecar.
+
+## Considered Options
+
+- **Keep the local server and browser GUI.** It can't stay running without a terminal, can't notify natively without per-OS helpers (ADR-0027), and leaves a localhost port that every web page can reach (ADR-0008).
+- **One Engine process per Project.** Better crash isolation, but the app-wide rate-limit pause (ADR-0040) would need coordination across processes. A crashed host is recovered on restart (ADR-0020) either way.
+- **Keep HTTP inside the app.** Nothing outside the app needs it in v1 (ADR-0042). A later scripting CLI can add a local socket.

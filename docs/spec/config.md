@@ -1,11 +1,12 @@
 # Configuration
 
-There are two files. The effective config is the committed file overlaid with the local one [ADR-0025].
+A Project's effective config is its committed file overlaid with its local settings [ADR-0025]. App settings, which apply to every Project, are separate [ADR-0038].
 
 | File | Committed | Holds |
 |---|---|---|
 | `segno.config.json` (repo root) | yes | repo and team settings [brief §User journey] |
-| `.segno/config.local.json` | no (gitignored) | per-machine settings and per-Role model overrides [ADR-0025] |
+| `projects/<id>/local.json` (app data directory) | no | per-machine settings and per-Role model overrides for one Project [ADR-0025] [ADR-0038] |
+| `settings.json` (app data directory) | no | app settings [ADR-0038] [ADR-0041] |
 
 ## `segno.config.json`
 
@@ -51,40 +52,55 @@ There are two files. The effective config is the committed file overlaid with th
 
 The review (2), test (2) and infra (3) caps are **not** configurable, and there are no keys for them [ADR-0019].
 
-## `.segno/config.local.json`
+## Per-Project local settings
 
-Every key is optional.
+`projects/<id>/local.json` in the app data directory ([store.md](store.md#app-data-directory)). Every key is optional. It's written only through the app [ADR-0025] [ADR-0038].
 
 ```jsonc
 {
-  "port": 4747,
-  "editor": "code {path}",
-  "worktreeRoot": "/home/me/.local/share/segno/worktrees",
-  "notifications": true,
+  "worktreeRoot": "/home/me/worktrees",
   "roles": { "coder": { "model": "opus" }, "coder-docs": { "model": "haiku" } }
 }
 ```
 
 | Key | Type | Default | Rule | Source |
 |---|---|---|---|---|
-| `port` | int | `4747` | 1024–65535 | [ADR-0008] |
-| `editor` | string | unset | a command line containing `{path}`, which is replaced by the worktree path | [ADR-0015] |
-| `worktreeRoot` | string | `${XDG_DATA_HOME:-~/.local/share}/segno/worktrees` | an absolute path outside the repo | [ADR-0009] |
-| `notifications` | bool | `true` | `false` disables browser notifications | [ADR-0027] |
+| `worktreeRoot` | string | unset (worktrees go under the Project's directory) | an absolute path outside the repo | [ADR-0009] [ADR-0038] |
 | `roles.<role>.model` | string | none | `<role>` ∈ `planner`, `coder`, `coder-docs`, `reviewer`. Overrides that Role's model (`coder-docs` overrides `roles.coder.docsModel`) | [ADR-0025] |
 
-Only `roles.<role>.model` may override a committed key. Any other committed key in the local file is a validation error [ADR-0025].
+Only `roles.<role>.model` may override a committed key. Any other committed key in the local settings is a validation error [ADR-0025].
+
+## App settings
+
+`settings.json` in the app data directory. Every key is optional. It's written only through the app [ADR-0038].
+
+```jsonc
+{
+  "editor": "code {path}",
+  "notifications": true,
+  "theme": "system",
+  "launchAtLogin": false
+}
+```
+
+| Key | Type | Default | Rule | Source |
+|---|---|---|---|---|
+| `editor` | string | unset | a command line containing `{path}`, which is replaced by the worktree path | [ADR-0015] |
+| `notifications` | bool | `true` | `false` turns native notifications off | [ADR-0041] |
+| `theme` | `"system"` \| `"light"` \| `"dark"` | `"system"` | | [ADR-0032] [ADR-0037] |
+| `launchAtLogin` | bool | `false` | starts Segno, in the tray, when the developer logs in | [ADR-0041] |
 
 ## Validation
 
-- **Both files are validated strictly** against a zod schema, and an equivalent JSON Schema is published. Unknown keys and out-of-range values are errors [ADR-0025].
-- **At `serve` startup,** an invalid effective config stops startup, listing every error [ADR-0025].
+- **Every file is validated strictly** against a zod schema, and an equivalent JSON Schema of `segno.config.json` is published. Unknown keys and out-of-range values are errors [ADR-0025].
+- **When a Project's Engine starts,** an invalid effective config keeps it from starting. The Project is `unavailable`, listing every error, and the other Projects keep running ([gui.md](gui.md#projects)) [ADR-0025] [ADR-0038].
 - **Adapter checks.** Each Role's Adapter is checked at validation time: installed (`detect()`) and capable. A failure is a validation error that names the Role and the missing capability [ADR-0017].
 
 ## Changes while running
 
-- **Both files are watched** [ADR-0025].
+- **`segno.config.json` is watched** in the repo's working tree. Local settings change only through the app [ADR-0025] [ADR-0038].
 - **A valid change** is recorded as `config.changed { source, changes }` and applies to **Runs started after it**. Live Runs are unaffected [ADR-0025].
 - **An invalid change is ignored.** The previous effective config stays in force, `config.rejected { source, errors }` is recorded, and the warning shows until a valid version of that file is saved [ADR-0025].
-- **`config.setModel`** (GUI model settings, or `segno model`) writes only `.segno/config.local.json`. It never touches `segno.config.json`, so changing a model never dirties the working tree [ADR-0025].
-- **Changes that need a restart.** `port` and `worktreeRoot` take effect at the next `serve`. A change to either is recorded with a "takes effect on restart" note [ADR-0025].
+- **`config.setModel`** (the GUI's model settings) writes only the Project's `local.json`. It never touches `segno.config.json`, so changing a model never dirties the working tree [ADR-0025] [ADR-0038].
+- **Changes that need a restart.** `worktreeRoot` takes effect the next time the Project's Engine starts. A change to it is recorded with a "takes effect on restart" note [ADR-0025].
+- **App settings** apply immediately and write no Event [ADR-0038].

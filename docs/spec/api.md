@@ -1,107 +1,112 @@
 # API
 
-The local HTTP server started by `segno serve`. It is built on Hono [ADR-0006]. The CLI (v1) and the GUI (v1.1) are both thin clients, typed from the same route definitions and zod schemas [ADR-0006] [ADR-0022].
+The Engine host protocol. The Engine host is one Electron `utilityProcess` that runs one Engine per Project [ADR-0037] [ADR-0038]. The app's window is a pure client of it: it talks to the host over Electron IPC (MessagePorts), through a preload bridge, and has no Node access of its own [ADR-0037]. Nothing listens on a network port [ADR-0037]. Every call is typed from the same zod schemas the host validates against [ADR-0022].
 
-## Binding and lifecycle
+## Lifecycle
 
-- **Address.** It listens on `127.0.0.1` only, with no option to bind elsewhere [ADR-0008].
-- **Port.** The port comes from `port` in `config.local.json` (default `4747`). If the port is taken, `serve` fails with an error naming the port. It never picks another [ADR-0008] [ADR-0025].
-- **Single instance.** It's enforced through `.segno/server.json` ([store.md](store.md#segno-layout)) [ADR-0008].
-- **Static files.** The same server serves the built GUI at `/` **(v1.1)** [brief §Decided].
+- **One host per app.** The app starts the Engine host at launch. It loads the Project registry ([store.md](store.md#app-data-directory)) and starts an Engine for every Project that can run, whichever Project the window shows ([gui.md](gui.md#projects)) [ADR-0038] [ADR-0040].
+- **Single instance.** A second launch of the app focuses the existing window and exits, through Electron's single-instance lock [ADR-0037].
+- **Host crash.** If the host process dies, the app restarts it once and the window resumes each Event stream from its last `seq`. A second death within 60 s shows an error with **Restart Engine** ([gui.md](gui.md#connection-state)) [ADR-0020] [ADR-0037].
+- **Quit** shuts every Engine down as in [engine.md](engine.md#startup-recovery-and-shutdown) [ADR-0041].
 
-## Authentication and request checks
+## Calls
 
-Every request is checked in this order [ADR-0008]:
+Every call is a request with one response, except the two streams. Calls that act on a Project take its `projectId` first. An unknown `projectId` gets the error `unknown-project`.
 
-| Check | Rule | Failure |
+| Call | Purpose | Section |
 |---|---|---|
-| Host | the `Host` header is `127.0.0.1:<port>` or `localhost:<port>` | `421`, `{ code: "bad-host" }` |
-| Credential | `Authorization: Bearer <token>` matches `server.json`'s token, **or** the `segno_session` cookie is valid | `401`, `{ code: "unauthorized" }` |
-| Origin (POST only) | if the request authenticated with the cookie: an `Origin` header is present and equals `http://127.0.0.1:<port>` or `http://localhost:<port>` | `403`, `{ code: "bad-origin" }` |
-
-**Token.** A new random token, at least 32 bytes, is generated on every `serve` start and written to `server.json` (mode 0600). Restarting invalidates every earlier token and cookie [ADR-0008].
-
-**GUI login (v1.1).**
-
-- `GET /auth?t=<token>` with a valid token sets `segno_session` (`HttpOnly; SameSite=Strict; Path=/`) and redirects `302` to `/`.
-- An invalid token gets `401` and sets no cookie.
-- The `/auth` route is exempt only from the Credential check [ADR-0008].
-
-GETs and both SSE streams require credentials too, because diffs and transcripts contain source code [ADR-0008].
+| `command(projectId, command)` | send one Command to that Project's Engine | [Commands](#commands) |
+| `query(projectId, name, params)` | read derived state | [Queries](#queries) |
+| `subscribe(projectId, since?)` | the Project's Event stream | [Event stream](#event-stream) |
+| `runOutput(projectId, runId)` | a Run's live output | [Live Run output](#live-run-output) |
+| `openWorktree(projectId, taskId)` | open a Task's worktree in the developer's editor | [Local actions](#local-actions) |
+| `projects.*`, `settings.*`, `cli.install` | app-level calls | [App-level calls](#app-level-calls) |
 
 ## Commands
 
-`POST /api/commands` with a JSON body holding one Command (the full list is in [engine.md](engine.md#commands)) [ADR-0022].
+`command(projectId, command)` carries one Command (the full list is in [engine.md](engine.md#commands)) [ADR-0022].
 
 ```ts
-// 200 – accepted
+// accepted
 { ok: true, events: number[] }                      // seq of every Event appended
-// 200 – rejected by the Engine (nothing appended)
+// rejected by the Engine (nothing appended)
 { ok: false, code: RejectionCode, message: string, errors?: ValidationError[] }
 ```
 
-- The HTTP status is `200` for every well-formed request, whether accepted or rejected. `400` is used only when the body isn't JSON or has no recognizable `type` (`{ code: "bad-request" }`) [ADR-0022].
+- A rejection is a normal result, not an error. The error `bad-request` is used only when the Command has no recognizable `type` [ADR-0022].
 - `RejectionCode` values are listed in [engine.md](engine.md#rejection-codes). `errors` is present for `validation` and uses the shape in [plan-format.md](plan-format.md#validation).
-- Commands are processed in arrival order (see [engine.md](engine.md#processing-model)).
+- Commands are processed in arrival order, per Project (see [engine.md](engine.md#processing-model)).
 
 ## Queries
 
-All are `GET` and return JSON [ADR-0022].
+`query(projectId, name, params)` returns JSON [ADR-0022].
 
-| Path | Returns |
-|---|---|
-| `/api/board` | the active Plan and its active or awaiting-merge Phase: Phase state; Tasks with state, pause flag, budgets used, Block reason, wait reason, high-risk flag and current Run; merge-queue order; board and rate-limit pause state; session meter; usage, if reported. `null` Plan when none is active |
-| `/api/awaiting` | the Awaiting-you items: `{ id, kind, planId, phaseId?, taskId?, title, createdAt }[]`, oldest first |
-| `/api/tasks/:id` | the full Task: current definition and revisions, state history, Runs, Verdicts, Findings (open and closed), risk, budgets |
-| `/api/tasks/:id/diff` | a unified diff of the Task branch against its merge-base with the Phase branch, plus the open diff-line Findings anchored to it. Once the worktree is deleted, the diff recorded at merge time |
-| `/api/runs/:id` | Run metadata (kind, Role, model, timing, outcome) |
-| `/api/runs/:id/transcript` | `transcript.jsonl` or `output.log` as stored, or `410 { code: "pruned" }` |
-| `/api/runs/:id/prompt` | `prompt.md`, or `410 { code: "pruned" }` |
-| `/api/plans` | every Plan in the repo with its state (History) |
-| `/api/plans/:id` | the Plan as currently derived |
-| `/api/plans/:id/export` | the Plan as YAML (`text/yaml`), in the export form of [plan-format.md](plan-format.md#export) |
-| `/api/phases` | archived Phases (History): `{ id, planId, title, state, prUrl?, startedAt, mergedAt? }[]` |
-| `/api/phases/:id/events` | every Event belonging to that Phase, for replay |
-| `/api/config` | the effective config, its source per key (`file`, `local`, `default`), and the latest `config.rejected` warning if one is unresolved |
-| `/api/health` | `{ version, pid, startedAt }` (used by the CLI's server check) |
+| `name` | Params | Returns |
+|---|---|---|
+| `board` | none | the active Plan and its active or awaiting-merge Phase: Phase state; Tasks with state, pause flag, budgets used, Block reason, wait reason, high-risk flag and current Run; merge-queue order; board and rate-limit pause state; session meter; usage, if reported. `null` Plan when none is active |
+| `awaiting` | none | the Awaiting-you items: `{ id, kind, planId, phaseId?, taskId?, title, createdAt }[]`, oldest first |
+| `task` | `{ taskId }` | the full Task: current definition and revisions, state history, Runs, Verdicts, Findings (open and closed), risk, budgets |
+| `taskDiff` | `{ taskId }` | a unified diff of the Task branch against its merge-base with the Phase branch, plus the open diff-line Findings anchored to it. Once the worktree is deleted, the diff recorded at merge time |
+| `run` | `{ runId }` | Run metadata (kind, Role, model, timing, outcome) |
+| `runTranscript` | `{ runId }` | `transcript.jsonl` or `output.log` as stored, or the error `pruned` |
+| `runPrompt` | `{ runId }` | `prompt.md`, or the error `pruned` |
+| `plans` | none | every Plan in the Project with its state (History) |
+| `plan` | `{ planId }` | the Plan as currently derived |
+| `planExport` | `{ planId }` | the Plan as YAML text, in the export form of [plan-format.md](plan-format.md#export) |
+| `phases` | none | archived Phases (History): `{ id, planId, title, state, prUrl?, startedAt, mergedAt? }[]` |
+| `phaseEvents` | `{ phaseId }` | every Event belonging to that Phase, for replay |
+| `config` | none | the effective config, its source per key (`file`, `local`, `default`), and the latest `config.rejected` warning if one is unresolved |
 
-Unknown ids return `404 { code: "not-found" }`.
+Unknown ids get the error `not-found`.
 
-Sources: [ADR-0022] [ADR-0007] [ADR-0025] [ADR-0033] [ADR-0012] [brief §The GUI].
+Sources: [ADR-0022] [ADR-0007] [ADR-0025] [ADR-0033] [ADR-0012] [ADR-0037] [brief §The GUI].
 
 ## Local actions
 
-`POST /api/tasks/:id/open-worktree` runs the configured `editor` command (from `config.local.json`, with `{path}` replaced by the worktree path) on the server's machine. It isn't a Command and writes no Event [ADR-0015] [ADR-0025]. It returns `204`, or `{ code: "no-worktree" }` with `409`, or `{ code: "no-editor" }` with `409` when `editor` is unset. It is subject to the same auth and Origin checks as Commands.
+`openWorktree(projectId, taskId)` runs the `editor` app setting ([config.md](config.md#app-settings)), with `{path}` replaced by the worktree path. It isn't a Command and writes no Event [ADR-0015] [ADR-0025]. It returns nothing, or the error `no-worktree`, or `no-editor` when `editor` is unset.
 
 ## Event stream
 
-`GET /api/stream`, as Server-Sent Events [brief §Decided] [ADR-0007].
+`subscribe(projectId, since?)` streams one Project's Event log [ADR-0007] [ADR-0037].
 
-- Every appended Event is sent as one SSE message: `id: <seq>`, `event: <type>`, `data: <the Event as JSON>`.
-- A client that reconnects with `Last-Event-ID: <seq>`, or `?since=<seq>`, first receives every Event after that seq, in order, then the live tail, with no gaps or duplicates.
-- With neither, the stream starts with the live tail only. Clients load state from `/api/board` or by replay, then attach with `since`.
-- Heartbeat: a comment line (`: ping`) every 15 s.
+- Every appended Event is delivered as `{ seq, type, v, ts, payload }`.
+- With `since`, the stream first delivers every Event after that `seq`, in order, then the live tail, with no gaps or duplicates.
+- Without it, the stream starts with the live tail only. Clients load state from the `board` query or by replay, then subscribe with `since`.
 - Clients derive state with the Engine's reducer, from the shared package [ADR-0007].
 
 ## Live Run output
 
-`GET /api/runs/:id/stream`, as SSE [ADR-0007].
+`runOutput(projectId, runId)` streams one Run's output [ADR-0007].
 
-- While the Run is live, its `output` text and script output lines are sent as `event: output`, `data: { text }`. When it ends, `event: end` with `data: { outcome }` is sent and the stream closes.
-- For a finished Run, the stream sends `end` immediately. Clients read the stored transcript instead.
+- While the Run is live, its `output` text and script output lines are delivered as `{ kind: "output", text }`. When it ends, `{ kind: "end", outcome }` is delivered and the stream closes.
+- For a finished Run, the stream delivers `end` immediately. Clients read the stored transcript instead.
 - This output is never written to the Event log.
+
+## App-level calls
+
+These act on the app, not on one Project's Engine, and write no Event [ADR-0038] [ADR-0039] [ADR-0042].
+
+| Call | Behavior |
+|---|---|
+| `projects.list()` | every Project: `{ id, name, path, status, awaitingCount }[]`, where `status` is `running`, or `unavailable` with a `reason` ([gui.md](gui.md#projects)) |
+| `projects.inspect(path)` | checks the folder and returns the add-project proposal: the existing `segno.config.json` with its validation result, or the detected settings ([gui.md](gui.md#adding-a-project)). The error `not-a-repo`, `no-remote` or `already-added` when the folder can't be a Project |
+| `projects.add(path, config?)` | registers the Project. `config` is the reviewed settings, written as `segno.config.json` when the file doesn't exist yet. Returns `{ id }` and starts its Engine |
+| `projects.remove(id, { deleteData })` | stops its Engine and unregisters it. With `deleteData`, its directory under the app data directory is deleted too. The repo is never touched |
+| `projects.locate(id, path)` | points an `unavailable` Project at its moved folder. The error `not-a-repo` when the folder isn't one |
+| `settings.get()` / `settings.set(changes)` | the app settings ([config.md](config.md#app-settings)) |
+| `cli.install()` | writes the `segno` launcher onto PATH ([cli.md](cli.md#installing)). Returns the path it wrote, or the error `install-failed` with the reason |
 
 ## Error format
 
-Every non-2xx response has the body `{ code: string, message: string }` [ADR-0022].
+Every error is `{ code: string, message: string }` [ADR-0022].
 
-| Status | `code` |
+| `code` | When |
 |---|---|
-| 400 | `bad-request` |
-| 401 | `unauthorized` |
-| 403 | `bad-origin` |
-| 404 | `not-found` |
-| 409 | `no-worktree`, `no-editor` |
-| 410 | `pruned` |
-| 421 | `bad-host` |
-| 500 | `internal` (the details go to `server.log`, never to the client) |
+| `bad-request` | a call or Command that doesn't match its schema well enough to route |
+| `unknown-project` | the `projectId` isn't registered, or its Project is `unavailable` |
+| `not-found` | an unknown task, run, plan or phase id |
+| `no-worktree`, `no-editor` | `openWorktree` can't run |
+| `pruned` | the Run's files were pruned |
+| `not-a-repo`, `no-remote`, `already-added` | `projects.inspect`, `projects.add` or `projects.locate` refused the folder |
+| `install-failed` | `cli.install` couldn't write the link |
+| `internal` | anything else. The details go to the host log ([store.md](store.md#app-data-directory)), never to the client |
