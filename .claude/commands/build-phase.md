@@ -11,6 +11,9 @@ This session builds B$ARGUMENTS only. Nothing from later build phases.
 
 Rules:
 - Don't reopen anything decided in the brief, the ADRs or the build plan.
+  The brief is the kickoff record: where a later ADR supersedes it, the
+  ADR wins. Likewise, when an ADR's status front matter says superseded or
+  amended, read the newer ADR too; the newer one wins.
   If the work exposes a real spec gap, stop, raise it with me, and record a
   new ADR plus the matching spec edit in the same PR. Never patch it silently.
 - Check the handoff's branch preconditions first (is the previous PR merged?),
