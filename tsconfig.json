@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/plan-format" },
+    { "path": "packages/core" },
+    { "path": "packages/engine" },
+    { "path": "packages/adapter-claude-code" },
+    { "path": "packages/host" },
+    { "path": "packages/cli" },
+    { "path": "packages/app" },
+    { "path": "packages/ui" },
+    { "path": "tsconfig.tests.json" }
+  ]
+}

@@ -1,3 +1,7 @@
+---
+status: accepted, amended by ADR-0044
+---
+
 # Plan file schema v1: tasks, risk flags and the automatic docs task
 
 A Plan file has `schemaVersion`, `title`, `summary` and `phases[]`. Each Phase has an `id`, a `title`, an optional `docs` block and `tasks[]`. Each Task has `id`, `title`, `description` (markdown), `acceptance` (one or more criteria), optional `dependsOn` (Task ids in the same Phase only), optional `context` path/glob hints and optional `risk`. Ids are author-chosen slugs, unique across the Plan and never reused, including after a split. A Plan needs at least one Phase, and every Phase needs at least one authored Task. Cycles, unknown ids and cross-Phase dependencies reject the whole Plan.

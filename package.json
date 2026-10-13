@@ -1,0 +1,26 @@
+{
+  "name": "segno",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.11.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc --build && pnpm --filter @segno/cli bundle",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "schema:generate": "pnpm build && node scripts/generate-plan-schema.mjs && biome format --write schemas/plan-file.v1.json",
+    "check:b1": "pnpm build && pnpm lint && pnpm test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "22.20.5",
+    "ajv": "8.20.0",
+    "tsdown": "0.23.1",
+    "typescript": "7.0.2",
+    "vitest": "5.0.4",
+    "zod": "4.6.7"
+  }
+}

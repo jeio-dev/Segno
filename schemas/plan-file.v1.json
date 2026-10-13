@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "title": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "phases": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 48,
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+          },
+          "title": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "docs": {
+            "type": "string"
+          },
+          "tasks": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 48,
+                  "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+                },
+                "title": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "acceptance": {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  }
+                },
+                "dependsOn": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                },
+                "context": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "risk": {
+                  "type": "object",
+                  "properties": {
+                    "flags": {
+                      "minItems": 1,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "migration",
+                          "auth",
+                          "payments",
+                          "data-deletion",
+                          "security",
+                          "other"
+                        ]
+                      },
+                      "uniqueItems": true
+                    },
+                    "reason": {
+                      "type": "string",
+                      "pattern": "\\S"
+                    }
+                  },
+                  "required": ["flags", "reason"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["id", "title", "description", "acceptance"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "title", "tasks"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schemaVersion", "title", "summary", "phases"],
+  "additionalProperties": false,
+  "title": "Segno Plan file (version 1)",
+  "description": "Structural rules for authored Plan files. Segno additionally validates ids and dependency graphs. Exported generated Tasks cannot be submitted."
+}

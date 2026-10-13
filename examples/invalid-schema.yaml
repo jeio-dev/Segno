@@ -1,0 +1,19 @@
+schemaVersion: 1
+title: '   '
+summary: true
+phases:
+  - id: Bad
+    title: ''
+    tasks:
+      - id: invalid--id
+        title: ''
+        description: false
+        acceptance: []
+        context: [42]
+        risk:
+          flags: [unknown]
+          reason: ''
+          extra: true
+        extra: true
+    extra: true
+extra: true

@@ -1,0 +1,16 @@
+schemaVersion: 1
+title: Reserved Docs id
+summary: Authored Tasks cannot use or depend on Docs Task ids.
+phases:
+  - id: work
+    title: Work
+    tasks:
+      - id: work-docs
+        title: Authored Docs Task
+        description: This id is reserved.
+        acceptance: [Docs exist]
+      - id: implement
+        title: Implement the change
+        description: Make the change.
+        acceptance: [The change works]
+        dependsOn: [work-docs]

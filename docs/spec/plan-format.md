@@ -42,7 +42,7 @@ Sources: fields [ADR-0011]; Acceptance criteria [glossary]; Risk flags [ADR-0011
 
 | Field | Rule | Source |
 |---|---|---|
-| slug (`phases[].id`, `tasks[].id`) | matches `^[a-z0-9]+(-[a-z0-9]+)*$`, 1–48 characters | [ADR-0011] |
+| slug (`phases[].id`, authored `tasks[].id`) | matches `^[a-z0-9]+(-[a-z0-9]+)*$`, 1–48 characters | [ADR-0011] [ADR-0044] |
 | `phases[].id` | unique within the Plan | [ADR-0011] |
 | `tasks[].id` | unique across the **whole Plan**, never reused, including by a later split or replan | [ADR-0011] |
 | `tasks[].id` | must not end in `-docs` if that would equal `<phase-id>-docs` for any Phase | [ADR-0011] |
@@ -67,6 +67,8 @@ Segno adds one Docs task to every Phase. Plan authors never write it [ADR-0011] 
 | `dependsOn` | every other non-superseded Task in the Phase, kept up to date through splits [ADR-0015] |
 | `risk` | none, unless a Reviewer raises one [ADR-0016] |
 | Role | Coder, using `roles.coder.docsModel` [ADR-0018] |
+
+Generated Docs task ids may be up to 53 characters: a Phase id of up to 48 characters plus `-docs`. The 48-character Task-id limit applies to authored Tasks [ADR-0044].
 
 Exporting a Plan writes Docs tasks out with `generated: true`. Submitting a file that contains a task with `generated: true` is rejected, so export is lossless for reading, and a Plan can't be resubmitted with its Docs tasks already in it [ADR-0011] [ADR-0012].
 

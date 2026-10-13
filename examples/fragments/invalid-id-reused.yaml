@@ -1,0 +1,10 @@
+- id: retired
+  title: Query titles
+  description: Query titles only.
+  acceptance: [Titles are found]
+  dependsOn: [store]
+- id: query-content
+  title: Query content
+  description: Query content only.
+  acceptance: [Content is found]
+  dependsOn: [retired]
