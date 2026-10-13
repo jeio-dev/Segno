@@ -315,6 +315,33 @@ test.each([
   },
 );
 
+test("each unrecognized field gets its own validation message", async () => {
+  const engine = engineAt();
+  expect(
+    await engine.handle({
+      type: "plan.approve",
+      planId: "missing",
+      approvedBy: "a",
+      clientVersion: "2",
+    }),
+  ).toMatchObject({
+    ok: false,
+    code: "validation",
+    errors: [
+      {
+        code: "schema",
+        path: "/approvedBy",
+        message: 'Unrecognized key: "approvedBy"',
+      },
+      {
+        code: "schema",
+        path: "/clientVersion",
+        message: 'Unrecognized key: "clientVersion"',
+      },
+    ],
+  });
+});
+
 test.each([undefined, "", " \n\t"])(
   "missing or blank notes/reason use their specific rejections",
   async (text) => {
@@ -406,6 +433,8 @@ test.each([
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ ABCDEFGHIJKLMNOPQRSTUVWXYZ",
     "abcdefghijklmnopqrstuvwxyz-abcdefghijklm",
   ],
+  [`${"a".repeat(39)} tail`, "a".repeat(39)],
+  [`${"a".repeat(39)}  tail`, "a".repeat(39)],
 ])("the slug for %s is %s", async (title, slug) => {
   const engine = engineAt();
   await engine.handle({
@@ -416,6 +445,22 @@ test.each([
     ),
   });
   expect(engine.state.plans[0]?.slug).toBe(slug);
+});
+
+test("a truncated slug that collides gets one separator before its suffix", async () => {
+  const engine = engineAt();
+  for (const title of [`${"a".repeat(39)} one`, `${"a".repeat(39)} two`]) {
+    await engine.handle({
+      type: "plan.submit",
+      yaml: yaml.replace("title: Search notes", `title: ${title}`),
+    });
+    const planId = engine.state.plans.at(-1)?.id;
+    await engine.handle({ type: "plan.sendBack", planId, notes: "Revise it." });
+  }
+  expect(engine.state.plans.map(({ slug }) => slug)).toEqual([
+    "a".repeat(39),
+    `${"a".repeat(39)}-2`,
+  ]);
 });
 
 test("closing and reopening reproduces Plans, approval items and the next sequence", async () => {
@@ -483,6 +528,13 @@ test("close drains queued Commands in arrival order and rejects later input", as
   expect(await returned).toEqual({ ok: true, events: [2] });
   expect(await submitted).toEqual({ ok: true, events: [3] });
   await closed;
+});
+
+test("reading a closed Engine throws the closed-Engine error", async () => {
+  const engine = engineAt();
+  await engine.close();
+  expect(() => engine.state).toThrow("The Engine is closed.");
+  expect(() => engine.readEvents()).toThrow("The Engine is closed.");
 });
 
 test("the queued Command retains the payload received at arrival", async () => {

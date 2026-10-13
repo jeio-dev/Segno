@@ -1,3 +1,4 @@
+import { validationCodes } from "@segno/plan-format";
 import { z } from "zod";
 
 const nonBlank = z.string().regex(/\S/, "Must contain non-whitespace text.");
@@ -36,20 +37,7 @@ export const validationErrorSchema = z.strictObject({
   path: z.string(),
   line: z.number().int().min(1).optional(),
   column: z.number().int().min(1).optional(),
-  code: z.enum([
-    "yaml-syntax",
-    "schema-version",
-    "schema",
-    "duplicate-id",
-    "unknown-dependency",
-    "cross-phase-dependency",
-    "dependency-cycle",
-    "reserved-id",
-    "generated-task",
-    "id-mismatch",
-    "too-few-tasks",
-    "id-reused",
-  ]),
+  code: z.enum(validationCodes),
   message: z.string(),
 });
 

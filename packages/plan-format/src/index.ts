@@ -9,3 +9,4 @@ export type {
   ValidationError,
   ValidationResult,
 } from "./types.js";
+export { validationCodes } from "./types.js";

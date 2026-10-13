@@ -1,16 +1,18 @@
-export type ValidationCode =
-  | "yaml-syntax"
-  | "schema-version"
-  | "schema"
-  | "duplicate-id"
-  | "unknown-dependency"
-  | "cross-phase-dependency"
-  | "dependency-cycle"
-  | "reserved-id"
-  | "generated-task"
-  | "id-mismatch"
-  | "too-few-tasks"
-  | "id-reused";
+export const validationCodes = [
+  "yaml-syntax",
+  "schema-version",
+  "schema",
+  "duplicate-id",
+  "unknown-dependency",
+  "cross-phase-dependency",
+  "dependency-cycle",
+  "reserved-id",
+  "generated-task",
+  "id-mismatch",
+  "too-few-tasks",
+  "id-reused",
+] as const;
+export type ValidationCode = (typeof validationCodes)[number];
 
 export interface ValidationError {
   path: string;
