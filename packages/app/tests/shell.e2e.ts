@@ -14,7 +14,8 @@ test("a second launch focuses the existing window and exits", async () => {
   await app.evaluate(({ BrowserWindow }) =>
     BrowserWindow.getAllWindows()[0]?.hide(),
   );
-  expect(await launchSecond(appData)).toBe(0);
+  const second = await launchSecond(appData);
+  expect(second.code, second.stderr).toBe(0);
   await expect
     .poll(() =>
       app.evaluate(({ BrowserWindow }) => {

@@ -67,12 +67,21 @@ export async function launch(appData = tempDir()): Promise<Launched> {
 }
 
 /** Starts a second instance with the same app data and waits for it to exit. */
-export function launchSecond(appData: string): Promise<number | null> {
-  const child = spawn(electronBinary, [appDir], {
+export function launchSecond(
+  appData: string,
+): Promise<{ code: number | null; stderr: string }> {
+  // Like Playwright's own launch: CI runners can't host Chromium's sandbox.
+  const child = spawn(electronBinary, ["--no-sandbox", appDir], {
     env: { ...process.env, SEGNO_APP_DATA: appData },
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "pipe"],
   });
-  return new Promise((resolve) => child.once("exit", resolve));
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  return new Promise((resolve) =>
+    child.once("exit", (code) => resolve({ code, stderr })),
+  );
 }
 
 /** Replaces a main-process dialog so the next call returns `result`. */
