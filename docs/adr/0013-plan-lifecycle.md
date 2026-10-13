@@ -1,0 +1,3 @@
+# Plan lifecycle
+
+A Plan is `awaiting-approval`, `active`, `complete`, `returned` or `abandoned`. A file that fails validation never becomes a Plan. At most one Plan per repo may be `awaiting-approval` or `active`, and a second submission is rejected with `plan-exists`. Approval cuts the first Phase branch. Sending a submitted Plan back (notes required) makes it `returned`, which is terminal, and the developer submits a revised file as a new Plan. Abandoning (reason required) stops all Runs, supersedes every unfinished Task and deletes their worktrees. Segno keeps the Phase branch and never closes a PR. The Plan is `complete` when its last Phase PR is merged. Complete, returned and abandoned Plans are archived to History, read-only and replayable.
