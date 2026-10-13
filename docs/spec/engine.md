@@ -23,7 +23,7 @@ States: `awaiting-approval`, `active`, `complete`, `returned`, `abandoned` [ADR-
 | `active` | last Phase `merged` | `complete` (terminal) | archived to History |
 | `active` or `awaiting-approval` | `plan.abandon` (reason required) | `abandoned` (terminal) | all live Runs stopped. Every non-`done` Task → `superseded`, and its worktree and Task branch are deleted. Phase branches are kept. Segno never closes a PR [ADR-0013] |
 
-The **plan slug** comes from `title`: lower-cased, with each run of characters outside `[a-z0-9]` replaced by `-`, trimmed, and truncated to 40 characters. If a slug is already taken by any Plan in this Project's Event log, `-2`, `-3`, … is appended [ADR-0033].
+The **plan slug** comes from `title`: lower-cased, with each run of characters outside `[a-z0-9]` replaced by `-`, trimmed, and truncated to 40 characters. An empty result uses `plan` [ADR-0045]. If a slug is already taken by any Plan in this Project's Event log, `-2`, `-3`, … is appended [ADR-0033].
 
 ## Phase lifecycle
 

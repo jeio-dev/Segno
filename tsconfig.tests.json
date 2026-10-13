@@ -11,5 +11,9 @@
     "packages/*/tests/**/*.ts",
     "packages/cli/tsdown.config.ts"
   ],
-  "references": [{ "path": "packages/plan-format" }]
+  "references": [
+    { "path": "packages/plan-format" },
+    { "path": "packages/core" },
+    { "path": "packages/engine" }
+  ]
 }
