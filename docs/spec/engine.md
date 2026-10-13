@@ -293,7 +293,7 @@ Every Event carries `seq` (gap-free, starting at 1), `type`, `v` (the schema ver
 | `ratelimit.lifted` | `adapter` |
 | `watchdog.corrected` | `taskId, violation, action` |
 | `config.changed` | `source: file \| local \| command, changes` |
-| `config.rejected` | `source, errors[]` |
+| `config.rejected` | `source, errors[]` (config errors, as in [config.md](config.md#validation)) |
 | `store.pruned` | `runIds[]` |
 | `planning.started` **(v1.2)** | `sessionId, brief` |
 | `planning.replied` **(v1.2)** | `sessionId, text` |

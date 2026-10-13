@@ -93,6 +93,20 @@ Only `roles.<role>.model` may override a committed key. Any other committed key 
 ## Validation
 
 - **Every file is validated strictly** against a zod schema, and an equivalent JSON Schema of `segno.config.json` is published. Unknown keys and out-of-range values are errors [ADR-0025].
+- **Every error is reported** as `{ file, path, line?, column?, code, message }`, where `file` is `segno.config.json` or `local.json`, `path` is a JSON pointer, and line and column come from the JSON source when one is available [ADR-0047]:
+
+| `code` | Meaning |
+|---|---|
+| `json-syntax` | the file isn't valid JSON |
+| `schema-version` | `schemaVersion` is missing or isn't `1` |
+| `schema` | wrong type, missing field, unknown key or out-of-range value, including `concurrency` other than `1` and any committed key other than `roles.<role>.model` in the local settings |
+| `denied-permission` | an `allow` entry matches an always-denied operation or asks for a bypass mode [ADR-0004] |
+| `unknown-remote` | `remote` isn't a git remote of the repo |
+| `unknown-branch` | `baseBranch` isn't a branch on `remote`, checked against the local remote-tracking ref |
+| `missing-file` | an added Project's repo has no `segno.config.json` |
+| `adapter` | a Role's Adapter isn't installed or lacks a capability the Role needs |
+
+- **Invalid app settings** (`settings.json`) aren't reported per Project. The host logs them to `host.log` and uses the defaults [ADR-0047].
 - **When a Project's Engine starts,** an invalid effective config keeps it from starting. The Project is `unavailable`, listing every error, and the other Projects keep running ([gui.md](gui.md#projects)) [ADR-0025] [ADR-0038].
 - **Adapter checks.** Each Role's Adapter is checked at validation time: installed (`detect()`) and capable. A failure is a validation error that names the Role and the missing capability [ADR-0017].
 

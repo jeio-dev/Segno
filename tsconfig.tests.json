@@ -8,12 +8,16 @@
   },
   "include": [
     "vitest.config.ts",
+    "vitest.e2e.config.ts",
+    "packages/app/electron.vite.config.ts",
     "packages/*/tests/**/*.ts",
     "packages/cli/tsdown.config.ts"
   ],
   "references": [
     { "path": "packages/plan-format" },
     { "path": "packages/core" },
-    { "path": "packages/engine" }
+    { "path": "packages/engine" },
+    { "path": "packages/host" },
+    { "path": "packages/ui" }
   ]
 }

@@ -20,7 +20,7 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 |---|---|---|---|
 | B1 | Workspace and Plan file | done | [#6](https://github.com/jeio-dev/Segno/pull/6) |
 | B2 | Event log and reducer | done | [#7](https://github.com/jeio-dev/Segno/pull/7) |
-| B3 | Engine host, app shell and Projects | not started | |
+| B3 | Engine host, app shell and Projects | done | |
 | B4 | Happy-path Task with a fake Adapter | not started | |
 | B5 | Claude Code Adapter | not started | |
 | B6 | Failure paths | not started | |
@@ -60,7 +60,7 @@ packages/
 ```
 
 - **Boundaries enforced by the compiler.** `core` and `plan-format` build with `lib: ["ES2023"]`, and `ui` with `lib: ["ES2023", "DOM"]`, all without `@types/node`, so the reducer and the renderer stay free of Node [ADR-0007] [ADR-0037]. The Engine depends only on the `AgentAdapter` interface in `core` [ADR-0017]. `startHost(deps)` is the composition root: the app passes the real Adapters, and tests pass fakes.
-- **Toolchain.** ESM only (`module: nodenext`), `tsc --build` with project references, Vitest, Biome, tsdown to bundle `cli`, electron-vite for `app` and `ui` (from B3), and electron-builder for releases (B10). `better-sqlite3` is rebuilt for Electron's Node. `engines.node` is `>=22`.
+- **Toolchain.** ESM only (`module: nodenext`), `tsc --build` with project references, Vitest, Biome, tsdown to bundle `cli`, electron-vite for `app` and `ui` (from B3), and electron-builder for releases (B10). `better-sqlite3` ships N-API prebuilds that load in both Node and Electron, so it isn't rebuilt (B3). `engines.node` is `>=22`.
 - **CI.** GitHub Actions on every PR: install, `tsc --build`, Biome, Vitest. On Node 22 and 24 until B3, then on the Node major that the chosen Electron bundles. From B3, S9 runs under xvfb on Linux. Real-git tests run in CI. Real `claude` and `gh` never do.
 - **Exit-check harness.** One root script per build phase, `pnpm check:bN`, runs that build phase's exit scenario. Live checks are `pnpm check:bN:live`, and the developer triggers them.
 
@@ -178,6 +178,21 @@ Every build phase's PR updates, as relevant:
 **Interim state:** an approved Plan's first Phase stays `pending` until B4.
 
 **Docs:** README gains running the app from a checkout, adding a Project, and submitting and approving a Plan.
+
+**B3 implementation decisions, agreed with the developer:**
+
+- New spec decisions: `projects.rename` [ADR-0046]; config error shape and codes, `unavailable` reasons and the `config` query's shape [ADR-0047]; the app data directory, `SEGNO_APP_DATA` and `<appData>/chromium/` [ADR-0048].
+- **Project models are read-only in B3.** Settings shows each Role's effective model and its source from the `config` query; editing arrives with `config.setModel` in B8.
+- **Host protocol.** `startHost({ appData, adapters, clock?, ghBinary? })` returns `{ connect(port), close() }`. Requests are `{ id, call, args }`; responses are `{ id, result }` or `{ id, error }`; a stream sends `{ id, item }` and is cancelled with `{ id, cancel: true }`. The schemas and a browser-safe `createHostClient(port)` live in `core`, and S6 drives the host through that client over a real `MessageChannel`. `subscribe` registers, acknowledges and replays in one tick, so nothing is missed or duplicated.
+- **Commands at the boundary.** The host checks only that a Command is an object with a string `type` (otherwise `bad-request`). The Engine rejects v1.2 Commands `unsupported-in-version` before any payload validation; v1 Commands not built yet stay `bad-request`.
+- **Detection** [ADR-0039]: the package manager comes from the root lockfile, then `packageManager` in `package.json`, then npm if a `package.json` exists. The test command is `<pm> test` when a `test` script exists, otherwise blank, and **Add** stays disabled until it's filled. The setup command is set only with a lockfile (`pnpm install --frozen-lockfile`, `yarn install --immutable` with `.yarnrc.yml` or `--frozen-lockfile` without, `npm ci`, `bun install --frozen-lockfile`). The remote is `origin`, else the first remote. The base branch comes from `refs/remotes/<remote>/HEAD`, then `main` or `master` on the remote, then the current branch. Models are planner `opus`, coder `sonnet`, coder-docs `haiku`, reviewer `opus`. The Coder's `allow` is `Bash(<pm> *)`. Keys left at their defaults are omitted from the written file.
+- **`allow` validation** [ADR-0004] is `validateAllow` in `adapter-claude-code`. An entry must be `Tool` or `Tool(specifier)`. A Bash rule is refused when its glob (with `:*` read as ` *`) can match any always-denied git command with or without arguments, so bare `Bash` and `Bash(*)` are refused. An entry naming a bypass mode is refused. Indirection such as `Bash(sh -c *)` isn't analyzed; the Adapter's deny list enforces at run time (B5).
+- **`projects.add`** writes `segno.config.json` only when it's missing, after validating the reviewed settings (`bad-request` otherwise), and never overwrites an existing file. A repo with an invalid committed file is still added and shows as `unavailable`. `projects.locate` also refuses a repo that's already another Project, and only an `unavailable` Project can be located.
+- **Board in B3:** `{ plan, phase }`, where `phase` stays `null` until B4 starts Phases. While a Plan awaits approval the board's empty state links to its Plan review instead of offering submission.
+- **App.** Electron 44.7.0 (Node 24.21.0), electron-vite 5.0.0 with Vite 7.3.7, React 19.3.0, Playwright 1.64.0 and the three `@fontsource` families at 5.3.0, pinned exactly. The window is sandboxed with context isolation; the preload exposes only the dialogs and the host port, which reaches the page as a window message. The built window has a strict Content Security Policy. Until B8's tray, closing the window quits the app.
+- **S9** launches the built app with a temporary `SEGNO_APP_DATA`. Dialogs are replaced in the main process through Playwright, and the host's pid comes from `app.getAppMetrics()`. The app has no test-only code paths.
+
+**Verification:** `pnpm check:b3` passes on Node 24.21.0: 163 Vitest tests, including 35 at S6; the B2 exit script; and 8 S9 journeys against the built app. CI runs it on Node 24 under xvfb.
 
 ## B4: Happy-path Task with a fake Adapter
 
@@ -339,4 +354,4 @@ Changes to an existing Event's shape before the first release [ADR-0035]. Delete
 
 | Build phase | Event `type` | Change |
 |---|---|---|
-| | | |
+| B3 | `config.rejected` | `errors` are config errors (`{ file, path, line?, column?, code, message }`) instead of Plan file validation errors [ADR-0047]. No such Event had been written |

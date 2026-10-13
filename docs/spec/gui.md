@@ -23,7 +23,7 @@ Sources: [brief §The GUI] [ADR-0010] [ADR-0038] [ADR-0039].
 ## Projects
 
 - **Sidebar.** Lists every Project from `projects.list` by name, with its Awaiting-you count. **Add project** opens the add-project flow [ADR-0038].
-- **Unavailable Projects.** A Project whose folder is gone, is no longer a git repo, or whose effective config is invalid is shown as unavailable with the reason and every config error. It offers **Locate…** (`projects.locate`) and **Remove**. Its Engine isn't running, and the other Projects are unaffected [ADR-0038].
+- **Unavailable Projects.** A Project whose folder is gone, is no longer a git repo, whose effective config is invalid, or whose Event log can't be replayed is shown as unavailable with the reason and every config error. It offers **Locate…** (`projects.locate`) and **Remove**. Its Engine isn't running, and the other Projects are unaffected [ADR-0038] [ADR-0047].
 - **Remove** asks whether to also delete the Project's Segno data (Event log, Runs and worktrees), then sends `projects.remove`. The repo is never touched [ADR-0038].
 
 ## Adding a Project
@@ -150,7 +150,7 @@ These follow [ADR-0041].
 | Section | Contents | Source |
 |---|---|---|
 | App | editor command, notifications, theme, start at login (off by default), and **Install the `segno` command** (`cli.install`) | [ADR-0041] [ADR-0042] [ADR-0032] |
-| Project | name, `worktreeRoot`, per-Role models (as in [Global controls](#global-controls)), **Prune runs now** with a days field (`store.prune`), and **Remove project** | [ADR-0038] [ADR-0033] |
+| Project | name (`projects.rename`), `worktreeRoot`, per-Role models (as in [Global controls](#global-controls)), **Prune runs now** with a days field (`store.prune`), and **Remove project** | [ADR-0038] [ADR-0033] [ADR-0046] |
 
 ## History
 
