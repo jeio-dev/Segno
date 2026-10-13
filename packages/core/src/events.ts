@@ -1,4 +1,5 @@
-import type { Plan, Risk, Task, ValidationError } from "@segno/plan-format";
+import type { Plan, Risk, Task } from "@segno/plan-format";
+import type { ConfigError } from "./config.js";
 
 export type PlanStatus =
   | "awaiting-approval"
@@ -161,7 +162,7 @@ export interface EventPayloads {
   "ratelimit.lifted": { adapter: string };
   "watchdog.corrected": TaskId & { violation: string; action: string };
   "config.changed": { source: ConfigSource; changes: Record<string, unknown> };
-  "config.rejected": { source: ConfigSource; errors: ValidationError[] };
+  "config.rejected": { source: ConfigSource; errors: ConfigError[] };
   "store.pruned": { runIds: string[] };
 }
 

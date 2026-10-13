@@ -5,6 +5,7 @@
     "includes": [
       "**",
       "!**/dist",
+      "!**/out",
       "!.claude",
       "!.agents",
       "!docs/design-tokens.css"

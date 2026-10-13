@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { type CommandResult, commandSchema, project } from "@segno/core";
+import {
+  type CommandResult,
+  commandSchema,
+  type Event,
+  laterCommandTypes,
+  project,
+} from "@segno/core";
 import { parsePlan } from "@segno/plan-format";
 import { openEventLog } from "./event-log.js";
 
@@ -30,6 +36,7 @@ export function openEngine({
     log.close();
     throw error;
   }
+  const listeners = new Set<(event: Event) => void>();
   let tail: Promise<void> = Promise.resolve();
   let closed = false;
   let closing: Promise<void> | undefined;
@@ -38,6 +45,11 @@ export function openEngine({
       return project(readEvents());
     },
     readEvents,
+    /** Calls `listener` with every Event appended from now on, in seq order. */
+    onAppend(listener: (event: Event) => void): () => void {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     handle(input: unknown): Promise<CommandResult> {
       if (closed) return Promise.reject(closedError());
       // Every B2 Command field is scalar; capture it before the caller can edit it.
@@ -63,12 +75,29 @@ export function openEngine({
     return new Error("The Engine is closed.");
   }
 
+  function append(event: Parameters<typeof log.append>[0]) {
+    log.append(event);
+    // The Event is committed; a failing listener must not fail the Command.
+    for (const listener of listeners)
+      try {
+        listener(event);
+      } catch {}
+  }
+
   function readEvents(since?: number) {
     if (closed) throw closedError();
     return log.readEvents(since);
   }
 
   function processCommand(input: unknown): CommandResult {
+    const type = (input as { type?: unknown } | null)?.type;
+    if ((laterCommandTypes as readonly unknown[]).includes(type)) {
+      return {
+        ok: false,
+        code: "unsupported-in-version",
+        message: `${String(type)} is a v1.2 Command; this Engine is v1.`,
+      };
+    }
     if (
       typeof input !== "object" ||
       input === null ||
@@ -149,7 +178,7 @@ export function openEngine({
       }
     }
     if (command.type === "plan.approve") {
-      log.append({
+      append({
         seq: state.lastSeq + 1,
         type: "plan.approved",
         v: 1,
@@ -159,7 +188,7 @@ export function openEngine({
       return { ok: true, events: [state.lastSeq + 1] };
     }
     if (command.type === "plan.sendBack") {
-      log.append({
+      append({
         seq: state.lastSeq + 1,
         type: "plan.returned",
         v: 1,
@@ -169,7 +198,7 @@ export function openEngine({
       return { ok: true, events: [state.lastSeq + 1] };
     }
     if (command.type === "plan.abandon") {
-      log.append({
+      append({
         seq: state.lastSeq + 1,
         type: "plan.abandoned",
         v: 1,
@@ -207,7 +236,7 @@ export function openEngine({
     const used = new Set(state.plans.map(({ slug }) => slug));
     let slug = stem;
     for (let suffix = 2; used.has(slug); suffix++) slug = `${stem}-${suffix}`;
-    log.append({
+    append({
       seq,
       type: "plan.submitted",
       v: 1,

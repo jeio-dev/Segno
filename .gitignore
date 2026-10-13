@@ -10,5 +10,6 @@ docs/handoff.md
 # Workspace dependencies and build output
 node_modules/
 dist/
+out/
 *.tsbuildinfo
 .vitest/

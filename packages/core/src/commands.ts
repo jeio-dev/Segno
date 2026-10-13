@@ -22,6 +22,17 @@ export const commandSchema = z.discriminatedUnion("type", [
 ]);
 export type Command = z.infer<typeof commandSchema>;
 
+/** Commands of a later version than v1, answered unsupported-in-version. */
+export const laterCommandTypes = [
+  "planning.start",
+  "planning.reply",
+  "planning.draftNow",
+  "planning.stop",
+  "planning.discard",
+  "task.askPlanner",
+  "task.applyPlannerAdvice",
+] as const;
+
 export const rejectionCodeSchema = z.enum([
   "validation",
   "not-found",

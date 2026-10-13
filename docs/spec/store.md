@@ -29,13 +29,14 @@ Sources: [ADR-0031] [ADR-0007].
 
 ## App data directory
 
-Segno keeps everything it stores under the app's data directory, which Electron chooses per OS (on Linux, `${XDG_DATA_HOME:-~/.local/share}/Segno`). Nothing is stored in the repo except Segno's branches and commits, and the committed `segno.config.json` [ADR-0038] [ADR-0039].
+Segno keeps everything it stores under the app's data directory: `SEGNO_APP_DATA` when it's set, otherwise `${XDG_DATA_HOME:-~/.local/share}/Segno` on Linux and Electron's `appData` plus `Segno` on macOS. Nothing is stored in the repo except Segno's branches and commits, and the committed `segno.config.json` [ADR-0038] [ADR-0039] [ADR-0048].
 
 ```
 <appData>/
   projects.json            the Project registry
   settings.json            app settings (see config.md)
   host.log                 Engine host diagnostics
+  chromium/                Electron's own state, including the single-instance lock
   projects/<id>/
     segno.db               the Project's Event log
     local.json             per-Project local settings (see config.md)
@@ -49,9 +50,9 @@ Segno keeps everything it stores under the app's data directory, which Electron 
     worktrees/<task-id>/   Task worktrees, unless worktreeRoot is set
 ```
 
-Sources: [ADR-0033] [ADR-0038] [ADR-0025] [ADR-0009].
+Sources: [ADR-0033] [ADR-0038] [ADR-0025] [ADR-0009] [ADR-0048].
 
-- **The registry.** `projects.json` holds `{ id, name, path, addedAt }` for each Project. `id` is generated when the Project is added and never reused. `name` defaults to the folder name. The registry is app state, not an Event log, and only the app-level calls in [api.md](api.md#app-level-calls) change it [ADR-0038].
+- **The registry.** `projects.json` holds `{ id, name, path, addedAt }` for each Project. `id` is generated when the Project is added and never reused. `name` defaults to the folder name. The registry is app state, not an Event log, and only the app-level calls in [api.md](api.md#app-level-calls) change it, including `projects.rename` [ADR-0038] [ADR-0046].
 - **One Project is one repo.** A folder whose git top-level is already registered can't be added again [ADR-0039].
 - **Removing a Project** stops its Engine and unregisters it. Its `projects/<id>/` directory is deleted only when the developer chooses to [ADR-0038].
 - `run-id` values are unique across the Project's history. Events refer to Run files by `run-id` only, never by absolute path [ADR-0033].
