@@ -35,11 +35,11 @@ export function openEngine({
   let closing: Promise<void> | undefined;
   return {
     get state() {
-      return project(log.readEvents());
+      return project(readEvents());
     },
-    readEvents: log.readEvents,
+    readEvents,
     handle(input: unknown): Promise<CommandResult> {
-      if (closed) return Promise.reject(new Error("The Engine is closed."));
+      if (closed) return Promise.reject(closedError());
       // Every B2 Command field is scalar; capture it before the caller can edit it.
       const received =
         typeof input === "object" && input !== null ? { ...input } : input;
@@ -58,6 +58,15 @@ export function openEngine({
       return closing;
     },
   };
+
+  function closedError() {
+    return new Error("The Engine is closed.");
+  }
+
+  function readEvents(since?: number) {
+    if (closed) throw closedError();
+    return log.readEvents(since);
+  }
 
   function processCommand(input: unknown): CommandResult {
     if (
@@ -109,7 +118,10 @@ export function openEngine({
             path: path.length
               ? `/${path.map((part) => String(part).replace(/~/g, "~0").replace(/\//g, "~1")).join("/")}`
               : "",
-            message: issue.message,
+            message:
+              issue.code === "unrecognized_keys"
+                ? `Unrecognized key: ${JSON.stringify(path.at(-1))}`
+                : issue.message,
           }));
         }),
       };
@@ -190,8 +202,8 @@ export function openEngine({
       parsed.plan.title
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-|-$/g, "")
-        .slice(0, 40) || "plan";
+        .slice(0, 40)
+        .replace(/^-|-$/g, "") || "plan";
     const used = new Set(state.plans.map(({ slug }) => slug));
     let slug = stem;
     for (let suffix = 2; used.has(slug); suffix++) slug = `${stem}-${suffix}`;
