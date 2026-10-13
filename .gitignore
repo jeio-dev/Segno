@@ -1,0 +1,8 @@
+# Segno local state: event log, server lock and token, local config, run logs (ADR-0033)
+.segno/
+
+# Personal Claude Code settings
+.claude/settings.local.json
+
+# Session handoff notes are not project docs
+docs/handoff.md
