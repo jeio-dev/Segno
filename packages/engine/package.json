@@ -8,5 +8,13 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
+  },
+  "dependencies": {
+    "@segno/core": "workspace:*",
+    "@segno/plan-format": "workspace:*",
+    "better-sqlite3": "13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0"
   }
 }

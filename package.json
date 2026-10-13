@@ -12,7 +12,8 @@
     "format": "biome format --write .",
     "test": "vitest run",
     "schema:generate": "pnpm build && node scripts/generate-plan-schema.mjs && biome format --write schemas/plan-file.v1.json",
-    "check:b1": "pnpm build && pnpm lint && pnpm test"
+    "check:b1": "pnpm build && pnpm lint && pnpm test",
+    "check:b2": "pnpm check:b1 && node packages/engine/scripts/check-b2.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",

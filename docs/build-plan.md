@@ -19,7 +19,7 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 | Id | Build phase | Status | PR |
 |---|---|---|---|
 | B1 | Workspace and Plan file | done | [#6](https://github.com/jeio-dev/Segno/pull/6) |
-| B2 | Event log and reducer | not started | |
+| B2 | Event log and reducer | done | |
 | B3 | Engine host, app shell and Projects | not started | |
 | B4 | Happy-path Task with a fake Adapter | not started | |
 | B5 | Claude Code Adapter | not started | |
@@ -138,6 +138,15 @@ Every build phase's PR updates, as relevant:
 **Exit check (`pnpm check:b2`):** An S3 script that prints the Event log. Submit → `plan.submitted` plus a `plan-approval` item. A second submit is rejected `plan-exists`. An invalid file is rejected `validation` with errors and appends nothing. Send back, abandon and approve each reach their state. Closing and reopening the DB gives an identical projected State. An unknown `type`/`v` in the log stops startup and names it.
 
 **Interim state:** approving a Plan makes it `active`, but its first Phase stays `pending` until B4. There's no interface yet; B3 adds it.
+
+**B2 implementation decisions, agreed with the developer:**
+
+- `openEngine({ dbPath, clock? })` exposes `handle(command)`, `readEvents(since?)`, a projected `state` getter, and async `close()` that drains queued Commands. Plan ids are UUIDs. The Event envelope is `{ seq, type, v, ts, payload }`.
+- State is `{ lastSeq, plans, awaiting }`. Plans retain their definition, slug, lifecycle state, notes or reason, and Phase states in submission order. Awaiting-you items use the API-spec shape.
+- The clock port is `{ now(): Date }`, defaulting to real UTC time. The runtime Command schema covers B2's four Plan Commands; later build phases extend it.
+- An empty derived Plan slug uses `plan`, then the existing collision rule [ADR-0045].
+
+**Verification:** implementation and local code review are complete. `pnpm check:b2` passes on Node 22.23.3 and 24.21.0 with 122 tests (49 at S2/S3), plus the S3 exit script that prints the Event log. Frozen-lockfile installation passes. The PR's GitHub Actions matrix runs the same check on Node 22 and 24; both jobs must be green before merge. B2 introduces the initial v1 Event declarations and changes no existing Event shape.
 
 ## B3: Engine host, app shell and Projects
 
