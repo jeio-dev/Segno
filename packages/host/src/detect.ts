@@ -7,8 +7,8 @@ type PackageManager = NonNullable<InspectResult["packageManager"]>;
 
 /** The add-project proposal for a repo without segno.config.json [ADR-0039]. */
 export async function detectConfig(top: string) {
-  const packageManager = detectPackageManager(top);
   const manifest = readManifest(top);
+  const packageManager = detectPackageManager(top, manifest);
   const remotes = await listRemotes(top);
   const remote = remotes.includes("origin")
     ? "origin"
@@ -47,10 +47,12 @@ const lockfiles: [string, PackageManager][] = [
   ["package-lock.json", "npm"],
 ];
 
-function detectPackageManager(top: string): PackageManager | undefined {
+function detectPackageManager(
+  top: string,
+  manifest: ReturnType<typeof readManifest>,
+): PackageManager | undefined {
   for (const [file, manager] of lockfiles)
     if (existsSync(join(top, file))) return manager;
-  const manifest = readManifest(top);
   const declared = String(manifest?.packageManager ?? "").split("@")[0];
   if (lockfiles.some(([, manager]) => manager === declared))
     return declared as PackageManager;

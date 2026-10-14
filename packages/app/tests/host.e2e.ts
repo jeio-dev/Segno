@@ -57,6 +57,11 @@ test("a killed host is restarted once with the board unchanged; a second death o
   process.kill(second as number, "SIGKILL");
   const restart = page.getByRole("button", { name: "Restart Engine" });
   await restart.waitFor();
+  // With no host, an action fails visibly instead of waiting forever.
+  await page.getByRole("button", { name: "Export Plan…" }).click();
+  await page
+    .getByText("The connection to the Engine host is closed.")
+    .waitFor();
   await restart.click();
   await expect.poll(() => hostPid(app)).toBeTypeOf("number");
   await page.getByRole("alert").filter({ hasText: "Restart Engine" }).waitFor({

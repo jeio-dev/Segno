@@ -228,6 +228,9 @@ export const callArgsSchemas = {
 
 export function createHostClient(port: HostPort) {
   let nextId = 1;
+  let closed = false;
+  const closedError = () =>
+    new HostError("internal", "The connection to the Engine host is closed.");
   const pending = new Map<
     number,
     { resolve(value: unknown): void; reject(error: HostError): void }
@@ -256,6 +259,8 @@ export function createHostClient(port: HostPort) {
     ...args: HostCalls[C]["args"]
   ): Promise<HostCalls[C]["result"]> {
     const id = nextId++;
+    // A closed client answers at once rather than waiting on a dead port.
+    if (closed) return Promise.reject(closedError());
     return new Promise((resolve, reject) => {
       pending.set(id, {
         resolve: resolve as (value: unknown) => void,
@@ -319,8 +324,9 @@ export function createHostClient(port: HostPort) {
       set: (changes: SettingsChanges) => call("settings.set", changes),
     },
     close() {
-      for (const waiter of pending.values())
-        waiter.reject(new HostError("internal", "The client is closed."));
+      if (closed) return;
+      closed = true;
+      for (const waiter of pending.values()) waiter.reject(closedError());
       pending.clear();
       streams.clear();
       port.close();

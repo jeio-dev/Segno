@@ -192,7 +192,7 @@ Every build phase's PR updates, as relevant:
 - **App.** Electron 44.7.0 (Node 24.21.0), electron-vite 5.0.0 with Vite 7.3.7, React 19.3.0, Playwright 1.64.0 and the three `@fontsource` families at 5.3.0, pinned exactly. The window is sandboxed with context isolation; the preload exposes only the dialogs and the host port, which reaches the page as a window message. The built window has a strict Content Security Policy. Until B8's tray, closing the window quits the app.
 - **S9** launches the built app with a temporary `SEGNO_APP_DATA`. Dialogs are replaced in the main process through Playwright, and the host's pid comes from `app.getAppMetrics()`. The app has no test-only code paths.
 
-**Verification:** `pnpm check:b3` passes on Node 24.21.0: 163 Vitest tests, including 35 at S6; the B2 exit script; and 8 S9 journeys against the built app. CI runs it on Node 24 under xvfb.
+**Verification:** `pnpm check:b3` passes on Node 24.21.0: 164 Vitest tests, including 36 at S6; the B2 exit script; and 8 S9 journeys against the built app. CI runs it on Node 24 under xvfb. Local and cloud code reviews are complete, and their accepted findings are fixed.
 
 ## B4: Happy-path Task with a fake Adapter
 
