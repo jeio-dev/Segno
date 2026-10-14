@@ -2,7 +2,7 @@
 
 Adding a Project without a `segno.config.json` used to show the detected settings and keep **Add** disabled until a test command was typed. That is the wrong job to give a beginner. Now **Add** asks only for a model per agent Role (Planner, Coder, Reviewer) and lands on the board. The models are kept as the Project's pending config in its app data directory.
 
-**Not onboarded.** A Project with no `segno.config.json` and no Plan ever submitted is _not onboarded_. Its board offers **Onboard project** and **Set up manually**, and `plan.submit` is rejected `not-onboarded`. A config that disappears after a Plan has existed still makes the Project `unavailable` with `missing-file`, because work is in flight.
+**Not onboarded.** A Project with no `segno.config.json` and no Plan ever submitted is _not onboarded_. Its board offers **Onboard project** and **Set up manually**, and `plan.submit` is rejected `not-onboarded`. A config that disappears after a Plan has existed still makes the Project `unavailable` with `missing-file`, because work is in flight. Telling these two apart needs the Event log, so a missing file is classified only after the log has been replayed, and an unreadable log reports `unreadable-log` first.
 
 **The onboarding Run.** **Onboard project** starts one Planner Run in a scratch worktree of the base branch. The Run's job:
 - Find the strongest check the repo has: tests, else typecheck, else build, else lint.
