@@ -24,7 +24,7 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 | B3.1 | Adding a Project without a config | done | [#11](https://github.com/jeio-dev/Segno/pull/11) |
 | B4 | Happy-path Task with a fake Adapter | done | [#12](https://github.com/jeio-dev/Segno/pull/12) |
 | B5 | Claude Code Adapter | done | [#13](https://github.com/jeio-dev/Segno/pull/13) |
-| B6 | Failure paths | locally verified; CI pending | |
+| B6 | Failure paths | done | [#14](https://github.com/jeio-dev/Segno/pull/14) |
 | B7 | Developer Task Commands | not started | |
 | B8 | Resilience, tray and notifications | not started | |
 | B9 | GitHub forge and multi-Phase | not started | |
@@ -359,7 +359,7 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 - The B5 live harness now allows review send-backs and infra retries, and checks Verdict decisions explicitly. It stops with details on `blocked` or `held`; B6 has no live check.
 - No existing Event shape changed. The reducer and board gain the read-model fields needed for Findings, risk and malformed review history. Restart recovery, developer Commands other than Approve / Send back, and Phase PRs remain B8, B7 and B9 respectively.
 
-**Verification:** `pnpm check:b6` passes on Node 24.21.0: the workspace build and Biome, 278 Vitest tests, the B2 exit scenario, and 17 S9 journeys against the built app. Code review against the B6 plan, specs, ADRs and repository standards is complete; its findings are fixed and covered at S2, S3 or S9. B6 has no live check. The branch has not been committed or pushed, so CI and a PR are pending the developer's request; the Status row becomes `done` when CI is green and the PR is opened.
+**Verification:** `pnpm check:b6` passes on Node 24.21.0: the workspace build and Biome, 278 Vitest tests, the B2 exit scenario, and 17 S9 journeys against the built app. Code review against the B6 plan, specs, ADRs and repository standards is complete; its findings are fixed and covered at S2, S3 or S9. B6 has no live check. CI also passes ([run 38641006741](https://github.com/jeio-dev/Segno/actions/runs/38641006741), attempt 2) on the implementation commit `115fbc9`, and [PR #14](https://github.com/jeio-dev/Segno/pull/14) is open. Attempt 1 hit the five-second timeout in an existing happy-path Engine test; rerunning the same commit passed the full check.
 
 ## B7: Developer Task Commands
 
