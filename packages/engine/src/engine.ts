@@ -210,7 +210,7 @@ export function openEngine({
         return outcome;
       });
     },
-    /** Resolves once no Command, Run outcome or Engine step is pending. */
+    /** Drains queued inputs and live Runs; does not wait for future retry timers. */
     idle(): Promise<void> {
       if (!queued && !live.size) return Promise.resolve();
       return new Promise((resolve) => idleWaiters.push(resolve));

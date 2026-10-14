@@ -56,7 +56,7 @@ export function runScript({
   });
   let stopping: Promise<void> | undefined;
   const signal = (name: NodeJS.Signals) => {
-    if (child.pid)
+    if (child.pid && child.exitCode === null && child.signalCode === null)
       try {
         process.kill(-child.pid, name);
       } catch {}
@@ -68,8 +68,6 @@ export function runScript({
         signal("SIGTERM");
         const timer = setTimeout(() => signal("SIGKILL"), 1000);
         await result;
-        // A descendant may close its output and outlive the shell.
-        signal("SIGKILL");
         clearTimeout(timer);
       })();
       return stopping;

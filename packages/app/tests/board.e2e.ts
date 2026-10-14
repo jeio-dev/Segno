@@ -142,6 +142,7 @@ test("the Review tab shows the Verdict and Send back sends a blocking developer 
   await drawer.getByRole("button", { name: "Send back", exact: true }).click();
   await drawer.getByLabel("Send back notes").fill("Protect private notes");
   await drawer.getByRole("button", { name: "Send notes", exact: true }).click();
-  await drawer.getByText("Protect private notes", { exact: true }).waitFor();
-  await drawer.getByText("developer · blocking", { exact: true }).waitFor();
+  const review = drawer.getByRole("tabpanel", { name: "Review" });
+  await review.getByText("Protect private notes", { exact: true }).waitFor();
+  await review.getByText("developer · blocking", { exact: true }).waitFor();
 });

@@ -1,12 +1,15 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
+  mkdirSync,
   readFileSync,
   renameSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type AgentAdapter,
   resolveConfig,
@@ -15,6 +18,7 @@ import {
 import { afterEach, expect, test } from "vitest";
 import { openEngine } from "../src/index.js";
 import {
+  approves,
   type FakeClock,
   fakeAdapter,
   fakeClock,
@@ -66,11 +70,13 @@ function workEngine({
   config = {},
   local = {},
   clock = fakeClock(),
+  onError,
 }: {
   adapters?: AgentAdapter[];
   config?: Partial<SegnoConfig>;
   local?: { worktreeRoot?: string };
   clock?: FakeClock;
+  onError?: (error: unknown) => void;
 } = {}) {
   const { repo, remote } = repos.repoWithRemote();
   const projectDir = repos.dir("segno-project-");
@@ -78,10 +84,11 @@ function workEngine({
   const engine = openEngine({
     dbPath: join(projectDir, "segno.db"),
     clock,
+    ...(onError ? { onError } : {}),
     workspace: { repo, projectDir, config: () => effective, adapters },
   });
   cleanups.push(() => engine.close());
-  return { engine, repo, remote, projectDir, clock };
+  return { engine, repo, remote, projectDir, clock, effective };
 }
 
 async function approvedPlan(engine: ReturnType<typeof openEngine>) {
@@ -1371,7 +1378,7 @@ test("git failures while preparing an infra retry consume the remaining infra bu
   });
 });
 
-test("a failed launch preparation removes its newly created worktree so the next start can succeed", async () => {
+test("a failed launch preparation records its worktree and retries the first Run", async () => {
   const adapter = fakeAdapter();
   const { engine, repo, projectDir, clock } = workEngine({
     adapters: [adapter],
@@ -1381,10 +1388,16 @@ test("a failed launch preparation removes its newly created worktree so the next
   await approvedPlan(engine);
   expect(engine.state.tasks[0]?.budgets.infra).toBe(1);
   expect(adapter.runs).toHaveLength(0);
-  expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(
+  expect(engine.state.tasks[0]).toMatchObject({
+    state: "coding",
+    worktree: { path: join(projectDir, "worktrees", "a") },
+  });
+  expect(git(repo, "worktree", "list", "--porcelain")).toContain(
     join(projectDir, "worktrees", "a"),
   );
-  expect(git(repo, "branch", "--list", "segno/search-notes/index--a")).toBe("");
+  expect(
+    git(repo, "branch", "--list", "segno/search-notes/index--a"),
+  ).toContain("segno/search-notes/index--a");
   unlinkSync(runs);
   clock.advance(30_000);
   await engine.idle();
@@ -1492,3 +1505,307 @@ test("a failed merge preserves an index lock that existed before the Run", async
   await engine.idle();
   expect(engine.state.tasks[0]?.state).toBe("done");
 });
+
+test("a merge retry with an existing conflicted MERGE_HEAD sends the conflict to the Coder", async () => {
+  const adapter = fakeAdapter();
+  const { engine, repo } = workEngine({ adapters: [adapter] });
+  await heldPlan(engine);
+  advancePhase(repo, { "a.txt": "Concurrent edit\n" });
+  const worktree = engine.state.tasks[0]?.worktree?.path ?? "";
+  expect(() =>
+    git(worktree, "merge", "--no-commit", "segno/search-notes/index"),
+  ).toThrow();
+  await engine.handle({ type: "task.approve", taskId: "a" });
+  await engine.idle();
+  expect(engine.state.tasks[0]).toMatchObject({
+    state: "held",
+    budgets: { review: 0, test: 0, infra: 0 },
+  });
+  expect(
+    adapter.runs.filter(({ kind }) => kind === "coder")[1]?.prompt,
+  ).toContain("## Conflicting files\n\na.txt");
+});
+
+test("a rejection is recorded and charged even when preparing its next Coder fails", async () => {
+  let first = true;
+  const adapter = fakeAdapter({
+    reviewer: async (run) => {
+      if (!first) return approves()(run);
+      first = false;
+      chmodSync(dirname(dirname(run.spec.transcriptPath)), 0o555);
+      return {
+        kind: "completed",
+        sessionId: "r",
+        finalText: "",
+        structured: {
+          ...approval,
+          decision: "reject",
+          findings: [{ severity: "blocking", body: "Finish the index" }],
+        },
+      };
+    },
+  });
+  const { engine, projectDir, clock } = workEngine({ adapters: [adapter] });
+  try {
+    await approvedPlan(engine);
+    expect(engine.state.tasks[0]).toMatchObject({
+      state: "coding",
+      budgets: { review: 1, test: 0, infra: 1 },
+    });
+    expect(engine.state.tasks[0]?.verdicts[0]?.verdict.decision).toBe("reject");
+    expect(
+      engine.state.runs.find(({ kind }) => kind === "reviewer")?.outcome,
+    ).toBe("completed");
+  } finally {
+    chmodSync(join(projectDir, "runs"), 0o755);
+  }
+  clock.advance(30_000);
+  await engine.idle();
+  expect(engine.state.tasks[0]).toMatchObject({
+    state: "done",
+    budgets: { review: 1, test: 0, infra: 1 },
+  });
+  expect(
+    adapter.runs.filter(({ kind }) => kind === "coder")[1]?.prompt,
+  ).toContain("Finish the index");
+});
+
+test("a failed test is charged and its log survives failure to prepare the next Coder", async () => {
+  const adapter = fakeAdapter();
+  const { engine, projectDir, clock, effective } = workEngine({
+    adapters: [adapter],
+  });
+  effective.tests.command = `chmod 555 '${projectDir}/runs'; echo failed-index-check; exit 1`;
+  try {
+    await approvedPlan(engine);
+    expect(engine.state.tasks[0]).toMatchObject({
+      state: "coding",
+      budgets: { review: 0, test: 1, infra: 1 },
+    });
+    expect(
+      engine.state.runs.find(({ kind }) => kind === "tests"),
+    ).toMatchObject({ outcome: "failed", exitCode: 1 });
+  } finally {
+    chmodSync(join(projectDir, "runs"), 0o755);
+  }
+  effective.tests.command = "true";
+  clock.advance(30_000);
+  await engine.idle();
+  expect(engine.state.tasks[0]).toMatchObject({
+    state: "done",
+    budgets: { review: 0, test: 1, infra: 1 },
+  });
+  expect(
+    adapter.runs.filter(({ kind }) => kind === "coder")[1]?.prompt,
+  ).toContain("failed-index-check");
+});
+
+test("a merge conflict is recorded before a failed Coder preparation and retries coding", async () => {
+  const adapter = fakeAdapter();
+  const { engine, repo, projectDir, clock } = workEngine({
+    adapters: [adapter],
+  });
+  await heldPlan(engine);
+  advancePhase(repo, { "a.txt": "Concurrent edit\n" });
+  const unsubscribe = engine.onAppend((event) => {
+    if (event.type === "run.started" && event.payload.kind === "merge")
+      chmodSync(join(projectDir, "runs"), 0o555);
+  });
+  try {
+    await engine.handle({ type: "task.approve", taskId: "a" });
+    await engine.idle();
+    expect(engine.state.tasks[0]).toMatchObject({
+      state: "coding",
+      budgets: { review: 0, test: 0, infra: 1 },
+    });
+    expect(
+      engine.readEvents().filter(({ type }) => type === "merge.conflicted"),
+    ).toMatchObject([{ payload: { files: ["a.txt"] } }]);
+  } finally {
+    unsubscribe();
+    chmodSync(join(projectDir, "runs"), 0o755);
+  }
+  clock.advance(30_000);
+  await engine.idle();
+  expect(engine.state.tasks[0]?.state).toBe("held");
+  expect(
+    adapter.runs.filter(({ kind }) => kind === "coder")[1]?.prompt,
+  ).toContain("## Conflicting files\n\na.txt");
+  expect(engine.state.runs.filter(({ kind }) => kind === "merge")).toHaveLength(
+    1,
+  );
+});
+
+test("a failed worktree checkout cleans up its owned branch before retrying", async () => {
+  const { engine, repo, projectDir, clock } = workEngine();
+  const hook = join(repo, ".git", "hooks", "post-checkout");
+  writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  await approvedPlan(engine);
+  expect(engine.state.tasks[0]?.budgets.infra).toBe(1);
+  expect(git(repo, "branch", "--list", "segno/search-notes/index--a")).toBe("");
+  expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(
+    join(projectDir, "worktrees", "a"),
+  );
+  unlinkSync(hook);
+  clock.advance(30_000);
+  await engine.idle();
+  expect(engine.state.tasks[0]).toMatchObject({
+    state: "done",
+    budgets: { infra: 1 },
+  });
+});
+
+test("a setup retry keeps the failed command when setup is removed from config", async () => {
+  const marker = join(repos.dir(), "setup-attempts");
+  const { engine, clock, effective } = workEngine({
+    config: { setup: { command: `echo attempt >> '${marker}'; exit 1` } },
+  });
+  await approvedPlan(engine);
+  delete effective.setup;
+  clock.advance(30_000);
+  await engine.idle();
+  expect(readFileSync(marker, "utf8")).toBe("attempt\nattempt\n");
+  expect(engine.state.tasks[0]).toMatchObject({
+    state: "coding",
+    budgets: { infra: 2 },
+  });
+  expect(engine.state.runs.map(({ kind }) => kind)).toEqual(["setup", "setup"]);
+});
+
+test("a merge timeout before MERGE_HEAD restores the checkout for its retry", async () => {
+  const { engine, repo, clock } = workEngine({
+    config: { tests: { command: "true", timeoutMin: 1 } },
+  });
+  await heldPlan(engine);
+  const worktree = engine.state.tasks[0]?.worktree?.path ?? "";
+  const before = readFileSync(join(worktree, "a.txt"), "utf8");
+  writeFileSync(join(worktree, "keep.txt"), "Existing untracked file");
+  advancePhase(repo, {
+    ".gitattributes": "other.txt filter=partial\n",
+    "other.txt": "Incoming work\n",
+  });
+  const marker = join(repo, ".git", "partial-ready");
+  const filter = join(repo, ".git", "partial-filter");
+  writeFileSync(
+    filter,
+    `#!/bin/sh\nprintf partial > a.txt\nprintf partial > other.txt\ntouch '${marker}'\nsleep 3\ncat\n`,
+    { mode: 0o755 },
+  );
+  git(repo, "config", "filter.partial.smudge", filter);
+  await engine.handle({ type: "task.approve", taskId: "a" });
+  await expect.poll(() => existsSync(marker)).toBe(true);
+  expect(
+    existsSync(git(worktree, "rev-parse", "--git-path", "MERGE_HEAD")),
+  ).toBe(false);
+  clock.advance(60_000);
+  await engine.idle();
+  expect(engine.state.runs.find(({ kind }) => kind === "merge")?.outcome).toBe(
+    "timeout",
+  );
+  expect(readFileSync(join(worktree, "a.txt"), "utf8")).toBe(before);
+  expect(git(worktree, "status", "--porcelain")).toBe("?? keep.txt");
+  expect(readFileSync(join(worktree, "keep.txt"), "utf8")).toBe(
+    "Existing untracked file",
+  );
+  git(repo, "config", "--unset", "filter.partial.smudge");
+  clock.advance(30_000);
+  await engine.idle();
+  expect(engine.state.tasks[0]).toMatchObject({
+    state: "done",
+    budgets: { infra: 1 },
+  });
+});
+
+test("the failing log tail preserves UTF-8 across file-read boundaries", async () => {
+  const adapter = fakeAdapter();
+  const { engine } = workEngine({
+    adapters: [adapter],
+    config: {
+      tests: {
+        command: `node -e 'for(let i=1;i<=205;i++) console.log("line-"+i+"-é".repeat(400));process.exit(1)'`,
+      },
+    },
+  });
+  await approvedPlan(engine);
+  const prompt =
+    adapter.runs.filter(({ kind }) => kind === "coder")[1]?.prompt ?? "";
+  const tail = prompt.split("## Failing test log\n")[1] ?? "";
+  expect(tail).toContain(`line-6${"-é".repeat(400)}\n`);
+  expect(tail).toContain(`line-205${"-é".repeat(400)}\n`);
+  expect(tail).not.toContain("line-5-");
+  expect(tail).not.toContain("�");
+});
+
+test("worktree creation leaves a preexisting Task branch untouched", async () => {
+  const { engine, repo, clock } = workEngine();
+  const branch = "segno/search-notes/index--a";
+  await engine.handle({ type: "plan.submit", yaml });
+  git(repo, "branch", branch, "main");
+  const original = git(repo, "rev-parse", branch);
+  await engine.handle({
+    type: "plan.approve",
+    planId: engine.state.plans[0]?.id,
+  });
+  await engine.idle();
+  expect(engine.state.tasks[0]?.budgets.infra).toBe(1);
+  expect(git(repo, "rev-parse", branch)).toBe(original);
+  git(repo, "branch", "-D", branch);
+  clock.advance(30_000);
+  await engine.idle();
+  expect(engine.state.tasks[0]?.state).toBe("done");
+});
+
+test("a worktree rollback error preserves the original checkout failure", async () => {
+  const errors: unknown[] = [];
+  const { engine, repo, projectDir } = workEngine({
+    onError: (error) => errors.push(error),
+  });
+  const hook = join(repo, ".git", "hooks", "post-checkout");
+  writeFileSync(hook, '#!/bin/sh\nchmod 555 "$(dirname "$PWD")"\nexit 1\n', {
+    mode: 0o755,
+  });
+  try {
+    await approvedPlan(engine);
+    expect(engine.state.tasks[0]?.budgets.infra).toBe(1);
+    expect(errors).toHaveLength(1);
+    const failure = errors[0] as AggregateError;
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure.errors).toHaveLength(2);
+    expect(failure.cause).toBe(failure.errors[0]);
+    expect(failure.cause).toMatchObject({
+      args: [
+        "worktree",
+        "add",
+        "--quiet",
+        join(projectDir, "worktrees", "a"),
+        "segno/search-notes/index--a",
+      ],
+      exitCode: 1,
+    });
+  } finally {
+    chmodSync(join(projectDir, "worktrees"), 0o755);
+  }
+});
+
+test.each(["file", "dangling symlink"])(
+  "worktree preparation preserves a preexisting %s at its path",
+  async (kind) => {
+    const { engine, repo, projectDir, clock } = workEngine();
+    const path = join(projectDir, "worktrees", "a");
+    mkdirSync(dirname(path), { recursive: true });
+    if (kind === "file") writeFileSync(path, "Existing file");
+    else symlinkSync("missing-target", path);
+    await approvedPlan(engine);
+    expect(engine.state.tasks[0]?.budgets.infra).toBe(1);
+    expect(lstatSync(path).isSymbolicLink()).toBe(kind === "dangling symlink");
+    if (kind === "file")
+      expect(readFileSync(path, "utf8")).toBe("Existing file");
+    expect(git(repo, "branch", "--list", "segno/search-notes/index--a")).toBe(
+      "",
+    );
+    unlinkSync(path);
+    clock.advance(30_000);
+    await engine.idle();
+    expect(engine.state.tasks[0]?.state).toBe("done");
+  },
+);

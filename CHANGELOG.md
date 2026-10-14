@@ -6,7 +6,9 @@ All notable changes to Segno are documented here, following [Keep a Changelog](h
 
 ### Fixed
 
-- Failed Task-start preparation cleans up its new worktree; infra retries retain unresolved conflict context, remove index locks left by canceled git writes, and back off after Send back preparation failures.
+- Failed worktree creation cleans up its owned branch; successful creation is recorded even when preparing the first Run fails.
+- Infra retries preserve decided outcomes and budgets, retry the failed step, retain unresolved conflicts, and restore partial merge checkouts after cancellation.
+- Script stop avoids signaling exited processes, and later Coder prompts read only the final 200 test-log lines.
 
 ### Added
 

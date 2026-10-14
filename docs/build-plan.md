@@ -350,7 +350,8 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 
 
 **B6 implementation notes:**
-- Follow-up verification of all ten PR #14 review comments is recorded in [the review dispositions](reviews/pr-14.md). Confirmed start, conflict-context, git-lock and Send back preparation failures are fixed in the PR follow-up; the full local `pnpm check:b6` passes for those fixes with 283 Vitest tests, the B2 exit scenario and 17 S9 journeys.
+- First follow-up verification of all ten PR #14 review comments is recorded in [the review dispositions](reviews/pr-14.md). Confirmed start, conflict-context, git-lock and Send back preparation failures are fixed in the PR follow-up; the full local `pnpm check:b6` passes for those fixes with 283 Vitest tests, the B2 exit scenario and 17 S9 journeys.
+- Second-review verification is recorded in [the same review report](reviews/pr-14.md#second-review-head-25f4e57). Follow-up fixes preserve outcomes when next-Run preparation fails, retry the actual failed preparation, clean up partial worktree creation and interrupted merge checkout, guard script signals after exit, and read only the failing log tail. The final local `pnpm check:b6` passes with 295 Vitest tests, the B2 exit scenario and 17 S9 journeys. The Send back journey now scopes its Finding assertion to the Review panel, avoiding a match against the notes textarea.
 - Infra retries wait 30 seconds after failure 1 and 2 minutes after failure 2. Failure 3 blocks immediately [ADR-0060]. Budgets are whole-life counts; a valid Verdict closes earlier Findings and records its own Findings and risk.
 - Every agent event resets the idle deadline. Agent timeouts await `stop()` before processing the outcome. Script and merge timeouts stop their process groups; scripts escalate when SIGTERM is ignored. Onboarding timeouts remove the scratch worktree and use no Task budget.
 - High-risk approvals enter `held`. Approve and Send back resolve the Awaiting-you item, and scheduling preserves the single slot even when several holds are resolved together.
@@ -376,7 +377,7 @@ A follow-up to B3, raised after using it: typing a test command before a Project
   - `force-approve` requires a reason, skips `held`, and still re-tests.
   - `take-over`/`hand-back` commits leftovers as `segno: developer changes` and re-enters at `testing`.
   - `note` appears in the next Coder prompt.
-  - `pause`/`resume` and `stop-retry` rerun the step with no budget used.
+  - `pause`/`resume` and `stop-retry` rerun the step with no budget used. Include pausing during infra backoff, letting its timer fire, then resuming without stranding the Task (PR #14 review).
 - **S9:**
   - An invalid split fragment shows its errors and sends nothing.
   - A diff-line note shows as an open blocking Finding.
@@ -391,6 +392,7 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 **Exit check (`pnpm check:b8`):**
 - **S6:**
   - Killing the host with `kill -9` mid-`coding` and restarting: the Run is `interrupted`, the step reruns with no budget used, and the Coder resumes its session.
+  - Restart during the 30-second or 2-minute infra backoff restores its pending retry, including an already-due timer, without using another budget or leaving a Task without a Run (PR #14 second review).
   - A dead Run process → `watchdog.corrected` plus an infra failure.
   - With two Projects, a `rate-limited` outcome in A records `ratelimit.paused` in both logs and stops both Projects' agent Runs, while test Runs continue. It lifts in both at `resetAt + 60 s`, or probes from A at 5, 15 and 30 min, then hourly.
   - A shutdown records live Runs `interrupted`.

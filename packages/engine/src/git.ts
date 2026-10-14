@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { existsSync, lstatSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 
 /** A git operation that failed without a conflict: an infra failure [ADR-0029]. */
@@ -129,7 +129,32 @@ export async function createTaskWorktree(
   repo: string,
   { path, branch, from }: { path: string; branch: string; from: string },
 ) {
-  await git(repo, "worktree", "add", "--quiet", "-b", branch, path, from);
+  if (
+    lstatSync(path, { throwIfNoEntry: false }) &&
+    (await readdir(path)).length
+  )
+    throw new GitError(
+      ["worktree", "add", path, branch],
+      "Worktree path is occupied.",
+    );
+  // Acquire the branch separately: a failed checkout can leave both resources
+  // behind. A preexisting branch fails before we own anything to roll back.
+  await git(repo, "branch", "--no-track", branch, from);
+  try {
+    await git(repo, "worktree", "add", "--quiet", path, branch);
+  } catch (error) {
+    try {
+      await removeScratchWorktree(repo, path);
+      await git(repo, "branch", "-D", branch);
+    } catch (cleanup) {
+      throw new AggregateError(
+        [error, cleanup],
+        "Worktree creation and rollback failed",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 /**
@@ -175,15 +200,7 @@ export async function commitLeftovers(
 ) {
   await git(worktree, "add", "--all");
   if (!(await git(worktree, "status", "--porcelain"))) {
-    const merging = await git(
-      worktree,
-      "rev-parse",
-      "--verify",
-      "MERGE_HEAD",
-    ).then(
-      () => true,
-      () => false,
-    );
+    const merging = await mergeInProgress(worktree);
     if (!merging) return undefined;
   }
   await commit(worktree, message, taskId);
@@ -219,29 +236,88 @@ export async function mergePhaseInto(
   const before = await run("rev-parse", "HEAD");
   if (await isAncestor(worktree, phase, before, signal))
     return { kind: "up-to-date" };
+  const pending = await mergeInProgress(worktree, signal);
+  // git may die during checkout, before it writes MERGE_HEAD. Only restore a
+  // clean tracked checkout we own, and preserve any preexisting untracked files.
+  const clean =
+    !pending && !(await run("status", "--porcelain", "--untracked-files=no"));
+  const added = clean
+    ? (
+        await run(
+          "diff",
+          "--no-renames",
+          "--name-only",
+          "--diff-filter=A",
+          "-z",
+          before,
+          phase,
+        )
+      )
+        .split("\0")
+        .filter(Boolean)
+        .map((file) => resolve(worktree, file))
+        .filter((path) => !lstatSync(path, { throwIfNoEntry: false }))
+    : [];
   try {
-    const pending = await run("rev-parse", "--verify", "MERGE_HEAD").then(
-      () => true,
-      () => false,
-    );
-    if (!pending)
-      await run("merge", "--quiet", "--no-ff", "--no-commit", phase);
+    try {
+      if (pending) {
+        const files = (await run("diff", "--name-only", "--diff-filter=U"))
+          .split("\n")
+          .filter(Boolean);
+        if (files.length) return { kind: "conflict", files };
+      } else await run("merge", "--quiet", "--no-ff", "--no-commit", phase);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const files = (await run("diff", "--name-only", "--diff-filter=U"))
+        .split("\n")
+        .filter(Boolean);
+      if (files.length) return { kind: "conflict", files };
+      throw error;
+    }
+    await commit(worktree, message, taskId, signal);
+    const changed = await run("diff", "--name-only", before, "HEAD");
+    return {
+      kind: "merged",
+      sha: await run("rev-parse", "HEAD"),
+      lockfileChanged: changed
+        .split("\n")
+        .some((file) => lockfiles.has(file.split("/").at(-1) ?? "")),
+    };
   } catch (error) {
-    const files = (await run("diff", "--name-only", "--diff-filter=U"))
-      .split("\n")
-      .filter(Boolean);
-    if (files.length) return { kind: "conflict", files };
+    if (signal?.aborted && clean) {
+      try {
+        if (
+          !(await mergeInProgress(worktree)) &&
+          (await git(worktree, "rev-parse", "HEAD")) === before
+        ) {
+          await git(worktree, "reset", "--hard", before);
+          for (const path of added) await rm(path, { force: true });
+        }
+      } catch (cleanup) {
+        throw new AggregateError(
+          [error, cleanup],
+          "Merge cancellation and rollback failed",
+          { cause: error },
+        );
+      }
+    }
     throw error;
   }
-  await commit(worktree, message, taskId, signal);
-  const changed = await run("diff", "--name-only", before, "HEAD");
-  return {
-    kind: "merged",
-    sha: await run("rev-parse", "HEAD"),
-    lockfileChanged: changed
-      .split("\n")
-      .some((file) => lockfiles.has(file.split("/").at(-1) ?? "")),
-  };
+}
+
+/** Whether git has a pending merge; other git errors remain infra failures. */
+async function mergeInProgress(cwd: string, signal?: AbortSignal) {
+  try {
+    await runGit(
+      cwd,
+      ["rev-parse", "--quiet", "--verify", "MERGE_HEAD"],
+      signal,
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof GitError && error.exitCode === 1) return false;
+    throw error;
+  }
 }
 
 async function isAncestor(
