@@ -116,6 +116,8 @@ export function openEngine({
     workspace &&
     openWork({
       ...workspace,
+      now: () => clock.now(),
+      setTimer,
       readState: () => project(log.readEvents()),
       emit,
       // A Run outcome is processed, then the Plan moves on from it.
@@ -134,6 +136,8 @@ export function openEngine({
     configStore &&
     onboardingContext &&
     openOnboarding({
+      now: () => clock.now(),
+      setTimer,
       repo: workspace.repo,
       projectDir: workspace.projectDir,
       adapters: workspace.adapters,
@@ -206,7 +210,7 @@ export function openEngine({
         return outcome;
       });
     },
-    /** Resolves once no Command, Run outcome or Engine step is pending. */
+    /** Drains queued inputs and live Runs; does not wait for future retry timers. */
     idle(): Promise<void> {
       if (!queued && !live.size) return Promise.resolve();
       return new Promise((resolve) => idleWaiters.push(resolve));
@@ -214,11 +218,13 @@ export function openEngine({
     close(): Promise<void> {
       closed = true;
       cancelStartRetry?.();
+      work?.close();
       // The last queued input may start a Run, so live Runs are stopped after
       // the queue drains. Recording them as interrupted is B8.
       closing ??= tail
         .then(() => Promise.all([...live.values()].map((run) => run.stop())))
         .then(() => {
+          work?.close();
           log.close();
         });
       return closing;
@@ -254,9 +260,27 @@ export function openEngine({
     if (!drafts.length) return [];
     const first = log.lastSeq() + 1;
     const ts = clock.now().toISOString();
-    const events = drafts.map(
-      (draft, index) => ({ ...draft, seq: first + index, v: 1, ts }) as Event,
-    );
+    const events = drafts.map((draft, index): Event => {
+      const envelope = { seq: first + index, v: 1 as const, ts };
+      if (draft.type === "task.findingsClosed") {
+        const { byVerdictRunId, ...payload } = draft.payload;
+        const verdictIndex = drafts.findIndex(
+          (candidate) =>
+            candidate.type === "verdict.recorded" &&
+            candidate.payload.runId === byVerdictRunId,
+        );
+        if (verdictIndex < 0)
+          throw new Error(
+            `No Verdict in this batch for Run ${byVerdictRunId}.`,
+          );
+        return {
+          ...envelope,
+          type: draft.type,
+          payload: { ...payload, byVerdictSeq: first + verdictIndex },
+        };
+      }
+      return { ...draft, ...envelope } as Event;
+    });
     log.append(events, planId);
     for (const event of events) notify(event);
     return events.map(({ seq }) => seq);
@@ -396,7 +420,7 @@ export function openEngine({
     ) {
       throw new BadRequestError();
     }
-    if (input.type === "plan.sendBack") {
+    if (input.type === "plan.sendBack" || input.type === "task.sendBack") {
       const notes = "notes" in input ? input.notes : undefined;
       if (notes === undefined || (typeof notes === "string" && !notes.trim())) {
         return {
@@ -493,6 +517,48 @@ export function openEngine({
       });
       await configStore.reload();
       return { ok: true, events: [seq] };
+    }
+    if (command.type === "task.approve" || command.type === "task.sendBack") {
+      const task = state.tasks.findLast(({ id }) => id === command.taskId);
+      if (!task)
+        return {
+          ok: false,
+          code: "not-found",
+          message: `Unknown Task ${command.taskId}.`,
+        };
+      if (task.state !== "held")
+        return {
+          ok: false,
+          code: "invalid-transition",
+          message: `${command.type} requires a held Task.`,
+        };
+      const drafts: Draft[] = [];
+      if (command.type === "task.sendBack")
+        drafts.push({
+          type: "task.findingAdded",
+          payload: {
+            taskId: task.id,
+            finding: {
+              id: randomUUID(),
+              source: "developer",
+              severity: "blocking",
+              body: command.notes,
+            },
+          },
+        });
+      drafts.push({
+        type: "task.transitioned",
+        payload: {
+          taskId: task.id,
+          from: "held",
+          to: command.type === "task.approve" ? "merging" : "coding",
+          cause:
+            command.type === "task.approve"
+              ? "developer-approved"
+              : "developer-sent-back",
+        },
+      });
+      return { ok: true, events: emit(drafts, task.planId) };
     }
     if (command.type !== "plan.submit") {
       const plan = state.plans.find(({ id }) => id === command.planId);

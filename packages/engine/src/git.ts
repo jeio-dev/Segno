@@ -1,5 +1,7 @@
-import { execFile } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { existsSync, lstatSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
+import { resolve } from "node:path";
 
 /** A git operation that failed without a conflict: an infra failure [ADR-0029]. */
 export class GitError extends Error {
@@ -15,28 +17,84 @@ export class GitError extends Error {
 
 /** Runs git non-interactively in `cwd`; rejects with a GitError on failure. */
 export function git(cwd: string, ...args: string[]): Promise<string> {
+  return runGit(cwd, args);
+}
+
+async function runGit(
+  cwd: string,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<string> {
+  // Only a cancellable write can leave a lock belonging to this Run. Never
+  // remove a lock that predated it, and wait until its process group exits.
+  const lock =
+    signal && ["merge", "commit", "add"].includes(args[0] ?? "")
+      ? resolve(cwd, await git(cwd, "rev-parse", "--git-path", "index.lock"))
+      : undefined;
+  const preexisting = lock !== undefined && existsSync(lock);
+  try {
+    return await executeGit(cwd, args, signal);
+  } finally {
+    if (signal?.aborted && lock && !preexisting)
+      await rm(lock, { force: true });
+  }
+}
+
+function executeGit(
+  cwd: string,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      args,
-      {
-        cwd,
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-      },
-      (error, stdout, stderr) => {
-        if (error)
-          reject(
-            new GitError(
-              args,
-              stderr || error.message,
-              typeof error.code === "number" ? error.code : undefined,
-            ),
-          );
-        else resolve(stdout.trimEnd());
-      },
-    );
+    if (signal?.aborted) {
+      reject(new Error("Git operation stopped"));
+      return;
+    }
+    const child = spawn("git", args, {
+      cwd,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+    let stdout = "";
+    let stderr = "";
+    let failure: string | undefined;
+    const abort = () => {
+      if (child.pid)
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {}
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    child.stdout.setEncoding("utf8").on("data", (text: string) => {
+      stdout += text;
+      if (stdout.length > 64 * 1024 * 1024) {
+        failure = "Git output exceeded 64 MiB";
+        abort();
+      }
+    });
+    child.stderr.setEncoding("utf8").on("data", (text: string) => {
+      stderr += text;
+      if (stderr.length > 64 * 1024 * 1024) {
+        failure = "Git output exceeded 64 MiB";
+        abort();
+      }
+    });
+    child.once("error", (error) => {
+      failure = error.message;
+    });
+    child.once("close", (code, killedBy) => {
+      signal?.removeEventListener("abort", abort);
+      if (failure || code !== 0 || signal?.aborted)
+        reject(
+          new GitError(
+            args,
+            failure ?? (stderr || `Git ended with ${killedBy ?? code}`),
+            code ?? undefined,
+          ),
+        );
+      else resolve(stdout.trimEnd());
+    });
   });
 }
 
@@ -71,7 +129,32 @@ export async function createTaskWorktree(
   repo: string,
   { path, branch, from }: { path: string; branch: string; from: string },
 ) {
-  await git(repo, "worktree", "add", "--quiet", "-b", branch, path, from);
+  if (
+    lstatSync(path, { throwIfNoEntry: false }) &&
+    (await readdir(path)).length
+  )
+    throw new GitError(
+      ["worktree", "add", path, branch],
+      "Worktree path is occupied.",
+    );
+  // Acquire the branch separately: a failed checkout can leave both resources
+  // behind. A preexisting branch fails before we own anything to roll back.
+  await git(repo, "branch", "--no-track", branch, from);
+  try {
+    await git(repo, "worktree", "add", "--quiet", path, branch);
+  } catch (error) {
+    try {
+      await removeScratchWorktree(repo, path);
+      await git(repo, "branch", "-D", branch);
+    } catch (cleanup) {
+      throw new AggregateError(
+        [error, cleanup],
+        "Worktree creation and rollback failed",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 /**
@@ -97,15 +180,16 @@ export async function removeScratchWorktree(repo: string, path: string) {
 }
 
 /** Commits a Segno-made commit with the developer's identity and trailer [ADR-0029]. */
-function commit(cwd: string, message: string, taskId: string) {
-  return git(
+function commit(
+  cwd: string,
+  message: string,
+  taskId: string,
+  signal?: AbortSignal,
+) {
+  return runGit(
     cwd,
-    "commit",
-    "--quiet",
-    "-m",
-    message,
-    "--trailer",
-    `Segno-Task: ${taskId}`,
+    ["commit", "--quiet", "-m", message, "--trailer", `Segno-Task: ${taskId}`],
+    signal,
   );
 }
 
@@ -115,7 +199,10 @@ export async function commitLeftovers(
   { message, taskId }: { message: string; taskId: string },
 ) {
   await git(worktree, "add", "--all");
-  if (!(await git(worktree, "status", "--porcelain"))) return undefined;
+  if (!(await git(worktree, "status", "--porcelain"))) {
+    const merging = await mergeInProgress(worktree);
+    if (!merging) return undefined;
+  }
   await commit(worktree, message, taskId);
   return git(worktree, "rev-parse", "HEAD");
 }
@@ -143,34 +230,104 @@ export async function mergePhaseInto(
     taskId,
     message,
   }: { phase: string; taskId: string; message: string },
+  signal?: AbortSignal,
 ): Promise<MergeResult> {
-  const before = await git(worktree, "rev-parse", "HEAD");
-  if (await isAncestor(worktree, phase, before)) return { kind: "up-to-date" };
+  const run = (...args: string[]) => runGit(worktree, args, signal);
+  const before = await run("rev-parse", "HEAD");
+  if (await isAncestor(worktree, phase, before, signal))
+    return { kind: "up-to-date" };
+  const pending = await mergeInProgress(worktree, signal);
+  // git may die during checkout, before it writes MERGE_HEAD. Only restore a
+  // clean tracked checkout we own, and preserve any preexisting untracked files.
+  const clean =
+    !pending && !(await run("status", "--porcelain", "--untracked-files=no"));
+  const added = clean
+    ? (
+        await run(
+          "diff",
+          "--no-renames",
+          "--name-only",
+          "--diff-filter=A",
+          "-z",
+          before,
+          phase,
+        )
+      )
+        .split("\0")
+        .filter(Boolean)
+        .map((file) => resolve(worktree, file))
+        .filter((path) => !lstatSync(path, { throwIfNoEntry: false }))
+    : [];
   try {
-    await git(worktree, "merge", "--quiet", "--no-ff", "--no-commit", phase);
+    try {
+      if (pending) {
+        const files = (await run("diff", "--name-only", "--diff-filter=U"))
+          .split("\n")
+          .filter(Boolean);
+        if (files.length) return { kind: "conflict", files };
+      } else await run("merge", "--quiet", "--no-ff", "--no-commit", phase);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const files = (await run("diff", "--name-only", "--diff-filter=U"))
+        .split("\n")
+        .filter(Boolean);
+      if (files.length) return { kind: "conflict", files };
+      throw error;
+    }
+    await commit(worktree, message, taskId, signal);
+    const changed = await run("diff", "--name-only", before, "HEAD");
+    return {
+      kind: "merged",
+      sha: await run("rev-parse", "HEAD"),
+      lockfileChanged: changed
+        .split("\n")
+        .some((file) => lockfiles.has(file.split("/").at(-1) ?? "")),
+    };
   } catch (error) {
-    const files = (
-      await git(worktree, "diff", "--name-only", "--diff-filter=U")
-    )
-      .split("\n")
-      .filter(Boolean);
-    if (files.length) return { kind: "conflict", files };
+    if (signal?.aborted && clean) {
+      try {
+        if (
+          !(await mergeInProgress(worktree)) &&
+          (await git(worktree, "rev-parse", "HEAD")) === before
+        ) {
+          await git(worktree, "reset", "--hard", before);
+          for (const path of added) await rm(path, { force: true });
+        }
+      } catch (cleanup) {
+        throw new AggregateError(
+          [error, cleanup],
+          "Merge cancellation and rollback failed",
+          { cause: error },
+        );
+      }
+    }
     throw error;
   }
-  await commit(worktree, message, taskId);
-  const changed = await git(worktree, "diff", "--name-only", before, "HEAD");
-  return {
-    kind: "merged",
-    sha: await git(worktree, "rev-parse", "HEAD"),
-    lockfileChanged: changed
-      .split("\n")
-      .some((file) => lockfiles.has(file.split("/").at(-1) ?? "")),
-  };
 }
 
-async function isAncestor(cwd: string, ancestor: string, of: string) {
+/** Whether git has a pending merge; other git errors remain infra failures. */
+async function mergeInProgress(cwd: string, signal?: AbortSignal) {
   try {
-    await git(cwd, "merge-base", "--is-ancestor", ancestor, of);
+    await runGit(
+      cwd,
+      ["rev-parse", "--quiet", "--verify", "MERGE_HEAD"],
+      signal,
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof GitError && error.exitCode === 1) return false;
+    throw error;
+  }
+}
+
+async function isAncestor(
+  cwd: string,
+  ancestor: string,
+  of: string,
+  signal?: AbortSignal,
+) {
+  try {
+    await runGit(cwd, ["merge-base", "--is-ancestor", ancestor, of], signal);
     return true;
   } catch (error) {
     // Exit code 1 means "not an ancestor"; anything else is a real failure.

@@ -11,13 +11,13 @@ import {
   onboardingOutputJsonSchema,
   onboardingOutputSchema,
   pointer,
-  type RunResult,
   type SegnoConfig,
   type State,
 } from "@segno/core";
 import { onboardingPermissions, onboardingPrompt } from "./context.js";
 import { createScratchWorktree, removeScratchWorktree } from "./git.js";
 import {
+  type AgentResult,
   ended,
   type LimitEvent,
   type LiveRuns,
@@ -30,6 +30,8 @@ export interface OnboardingContext {
   adapter: AdapterId;
   /** The pending config's Planner model, overridden by local settings. */
   model: string;
+  timeoutMin?: number;
+  idleTimeoutMin?: number;
   /** The detected remote and base branch the checks run on. */
   remote: string;
   baseBranch: string;
@@ -39,6 +41,8 @@ export interface OnboardingContext {
 }
 
 interface OnboardingDeps {
+  now(): Date;
+  setTimer(at: Date, fire: () => void): () => void;
   repo: string;
   projectDir: string;
   adapters: readonly AgentAdapter[];
@@ -126,6 +130,12 @@ export function openOnboarding(deps: OnboardingDeps) {
     try {
       launchAgentRun({
         adapter,
+        deadlines: {
+          now: deps.now,
+          setTimer: deps.setTimer,
+          wallMs: (context.timeoutMin ?? 20) * 60_000,
+          idleMs: (context.idleTimeoutMin ?? 10) * 60_000,
+        },
         spec: {
           runId,
           kind: "onboarding",
@@ -169,7 +179,7 @@ export function openOnboarding(deps: OnboardingDeps) {
     return readState().runs.find(({ id }) => id === runId)?.outcome;
   }
 
-  async function finish(runId: string, result: RunResult) {
+  async function finish(runId: string, result: AgentResult) {
     if (finishedRun(runId)) return;
     if (result.kind === "rate-limited") {
       // No failure: B8's rate-limit pause reruns it; until then it's idle again.
@@ -187,6 +197,13 @@ export function openOnboarding(deps: OnboardingDeps) {
       ]);
       return ended(live, runId, "rate-limited");
     }
+    if (result.kind === "timeout" || result.kind === "hung")
+      return fail(
+        runId,
+        result.kind,
+        { detail: result.detail },
+        { outcome: result.kind },
+      );
     // Crashed or failed: onboarding calls both crashed.
     if (result.kind !== "completed")
       return fail(
@@ -195,7 +212,7 @@ export function openOnboarding(deps: OnboardingDeps) {
         { detail: result.detail },
         {
           outcome: result.kind,
-          ...(result.exitCode === undefined
+          ...(!("exitCode" in result) || result.exitCode === undefined
             ? {}
             : { exitCode: result.exitCode }),
         },
@@ -266,15 +283,18 @@ export function openOnboarding(deps: OnboardingDeps) {
    */
   async function fail(
     runId: string,
-    reason: "unable" | "invalid-proposal" | "crashed",
+    reason: "unable" | "invalid-proposal" | "crashed" | "timeout" | "hung",
     extra: { detail?: string; errors?: unknown[] },
-    run: { outcome: "crashed" | "failed"; exitCode?: number } = {
+    run: {
+      outcome: "crashed" | "failed" | "timeout" | "hung";
+      exitCode?: number;
+    } = {
       outcome: "crashed",
     },
   ) {
     await removeScratch(runId);
     const finished =
-      reason === "crashed"
+      reason === "crashed" || reason === "timeout" || reason === "hung"
         ? {
             ...run,
             ...(extra.detail === undefined ? {} : { detail: extra.detail }),

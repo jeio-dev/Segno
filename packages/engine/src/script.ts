@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 
 export interface ScriptResult {
+  timeout?: boolean;
   exitCode?: number;
   signal?: string;
   error?: string;
@@ -53,14 +54,23 @@ export function runScript({
       );
     });
   });
+  let stopping: Promise<void> | undefined;
+  const signal = (name: NodeJS.Signals) => {
+    if (child.pid && child.exitCode === null && child.signalCode === null)
+      try {
+        process.kill(-child.pid, name);
+      } catch {}
+  };
   return {
     result,
-    async stop() {
-      if (child.exitCode === null && child.signalCode === null && child.pid)
-        try {
-          process.kill(-child.pid, "SIGTERM");
-        } catch {}
-      await result;
+    stop() {
+      stopping ??= (async () => {
+        signal("SIGTERM");
+        const timer = setTimeout(() => signal("SIGKILL"), 1000);
+        await result;
+        clearTimeout(timer);
+      })();
+      return stopping;
     },
   };
 }

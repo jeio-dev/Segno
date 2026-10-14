@@ -61,6 +61,7 @@ export function boardOf(
           ...(task.blockReason ? { blockReason: task.blockReason } : {}),
           ...(waitReason ? { waitReason } : {}),
           highRisk: task.highRisk,
+          risk: task.risk,
           ...(run
             ? { run: { id: run.id, kind: run.kind, role: run.role } }
             : {}),

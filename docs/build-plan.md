@@ -24,7 +24,7 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 | B3.1 | Adding a Project without a config | done | [#11](https://github.com/jeio-dev/Segno/pull/11) |
 | B4 | Happy-path Task with a fake Adapter | done | [#12](https://github.com/jeio-dev/Segno/pull/12) |
 | B5 | Claude Code Adapter | done | [#13](https://github.com/jeio-dev/Segno/pull/13) |
-| B6 | Failure paths | not started | |
+| B6 | Failure paths | done | [#14](https://github.com/jeio-dev/Segno/pull/14) |
 | B7 | Developer Task Commands | not started | |
 | B8 | Resilience, tray and notifications | not started | |
 | B9 | GitHub forge and multi-Phase | not started | |
@@ -339,7 +339,7 @@ A follow-up to B3, raised after using it: typing a test command before a Project
   - 2 rejects → `review-limit`
   - 2 failing test runs → `test-limit`
   - 3 malformed Verdicts, repaired by resume → `verdict-invalid`
-  - 3 crashes, backed off 30 s / 2 min / 5 min → `infra-limit`
+  - 3 crashes, with retries after 30 s / 2 min and immediate blocking on the third failure → `infra-limit` [ADR-0060]
   - 3 failed setup Runs → `setup-failed`
   - a Coder timeout and an idle timeout count as infra failures
   - a high-risk Task (from the Plan, or raised by a Verdict) → `held` → `task.approve` lands it
@@ -347,6 +347,21 @@ A follow-up to B3, raised after using it: typing a test command before a Project
   - a merge conflict → `coding` with the files listed
   - a dependent of a Blocked Task stays `waiting` with its wait reason
 - **S9:** a `held` Task is approved from Awaiting you and reaches Done. A Blocked card shows its Block reason and budgets.
+
+
+**B6 implementation notes:**
+- First follow-up verification of all ten PR #14 review comments is recorded in [the review dispositions](reviews/pr-14.md). Confirmed start, conflict-context, git-lock and Send back preparation failures are fixed in the PR follow-up; the full local `pnpm check:b6` passes for those fixes with 283 Vitest tests, the B2 exit scenario and 17 S9 journeys.
+- Second-review verification is recorded in [the same review report](reviews/pr-14.md#second-review-head-25f4e57). Follow-up fixes preserve outcomes when next-Run preparation fails, retry the actual failed preparation, clean up partial worktree creation and interrupted merge checkout, guard script signals after exit, and read only the failing log tail. The final local `pnpm check:b6` passes with 295 Vitest tests, the B2 exit scenario and 17 S9 journeys. The Send back journey now scopes its Finding assertion to the Review panel, avoiding a match against the notes textarea.
+- Infra retries wait 30 seconds after failure 1 and 2 minutes after failure 2. Failure 3 blocks immediately [ADR-0060]. Budgets are whole-life counts; a valid Verdict closes earlier Findings and records its own Findings and risk.
+- Every agent event resets the idle deadline. Agent timeouts await `stop()` before processing the outcome. Script and merge timeouts stop their process groups; scripts escalate when SIGTERM is ignored. Onboarding timeouts remove the scratch worktree and use no Task budget.
+- High-risk approvals enter `held`. Approve and Send back resolve the Awaiting-you item, and scheduling preserves the single slot even when several holds are resolved together.
+- Rejected reviews, failed tests and merge conflicts supply the next Coder or Docs pass with the relevant blocking Findings, last 200 test-log lines and full log path, or conflicting files. Re-review includes recorded risk and open blocking Findings. Repairs resume when supported and preserve the Shell section; otherwise they start a fresh review.
+- A conflict resolution that matches the previous HEAD still finishes its pending merge commit. A timed-out merge can retry a pending clean merge commit. Git failures while creating a worktree or preparing a retry also consume infra budget.
+- The board exposes budgets, Block reasons, dependency waits and risk flags. The Review tab lists valid and malformed Verdicts, checklists, docs checks, Findings and raised risk. Both the drawer and Awaiting you offer Approve and Send back.
+- The B5 live harness now allows review send-backs and infra retries, and checks Verdict decisions explicitly. It stops with details on `blocked` or `held`; B6 has no live check.
+- No existing Event shape changed. The reducer and board gain the read-model fields needed for Findings, risk and malformed review history. Restart recovery, developer Commands other than Approve / Send back, and Phase PRs remain B8, B7 and B9 respectively.
+
+**Verification:** `pnpm check:b6` passes on Node 24.21.0: the workspace build and Biome, 278 Vitest tests, the B2 exit scenario, and 17 S9 journeys against the built app. Code review against the B6 plan, specs, ADRs and repository standards is complete; its findings are fixed and covered at S2, S3 or S9. B6 has no live check. CI also passes ([run 38641006741](https://github.com/jeio-dev/Segno/actions/runs/38641006741), attempt 2) on the implementation commit `115fbc9`, and [PR #14](https://github.com/jeio-dev/Segno/pull/14) is open. Attempt 1 hit the five-second timeout in an existing happy-path Engine test; rerunning the same commit passed the full check.
 
 ## B7: Developer Task Commands
 
@@ -362,7 +377,7 @@ A follow-up to B3, raised after using it: typing a test command before a Project
   - `force-approve` requires a reason, skips `held`, and still re-tests.
   - `take-over`/`hand-back` commits leftovers as `segno: developer changes` and re-enters at `testing`.
   - `note` appears in the next Coder prompt.
-  - `pause`/`resume` and `stop-retry` rerun the step with no budget used.
+  - `pause`/`resume` and `stop-retry` rerun the step with no budget used. Include pausing during infra backoff, letting its timer fire, then resuming without stranding the Task (PR #14 review).
 - **S9:**
   - An invalid split fragment shows its errors and sends nothing.
   - A diff-line note shows as an open blocking Finding.
@@ -377,6 +392,7 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 **Exit check (`pnpm check:b8`):**
 - **S6:**
   - Killing the host with `kill -9` mid-`coding` and restarting: the Run is `interrupted`, the step reruns with no budget used, and the Coder resumes its session.
+  - Restart during the 30-second or 2-minute infra backoff restores its pending retry, including an already-due timer, without using another budget or leaving a Task without a Run (PR #14 second review).
   - A dead Run process → `watchdog.corrected` plus an infra failure.
   - With two Projects, a `rate-limited` outcome in A records `ratelimit.paused` in both logs and stops both Projects' agent Runs, while test Runs continue. It lifts in both at `resetAt + 60 s`, or probes from A at 5, 15 and 30 min, then hourly.
   - A shutdown records live Runs `interrupted`.

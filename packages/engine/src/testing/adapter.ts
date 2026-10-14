@@ -48,7 +48,13 @@ export function approves(): FakeScript {
       schemaVersion: 1,
       decision: "approve",
       summary: "Meets every acceptance criterion.",
-      acceptance: [],
+      acceptance: [
+        ...(
+          run.spec.prompt
+            .split("## Acceptance criteria\n")[1]
+            ?.split("\n## ")[0] ?? ""
+        ).matchAll(/^(\d+)\. /gm),
+      ].map((match) => ({ index: Number(match[1]), met: true, note: "Met." })),
       docs: { needed: false, satisfied: true, note: "" },
       findings: [],
     };
@@ -135,7 +141,13 @@ export function fakeAdapter(
     id = "claude-code",
     paceMs = 0,
     usage = false,
-  }: { id?: AdapterId; paceMs?: number; usage?: boolean } = {},
+    resume = true,
+  }: {
+    id?: AdapterId;
+    paceMs?: number;
+    usage?: boolean;
+    resume?: boolean;
+  } = {},
 ) {
   const runs: RunSpec[] = [];
   const defaults: Partial<Record<RunSpec["kind"], FakeScript>> = {
@@ -146,7 +158,7 @@ export function fakeAdapter(
   const adapter = {
     id,
     capabilities: {
-      resume: true,
+      resume,
       structuredOutput: true,
       toolAllowlist: true,
       usage,

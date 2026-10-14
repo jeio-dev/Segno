@@ -81,12 +81,14 @@ export function coderPrompt({
   phase,
   task,
   testsCommand,
+  findings = [],
   permissions,
 }: {
   plan: Plan;
   phase: Phase;
   task: Task;
   testsCommand: string;
+  findings?: Finding[];
   permissions: PermissionProfile;
 }) {
   return document([
@@ -101,6 +103,7 @@ export function coderPrompt({
     ...(task.context?.length
       ? ["### Context", "Start from these:", list(task.context)]
       : []),
+    ...findingsSection(findings),
     ...shellSection(permissions),
     "## Definition of done",
     list([
@@ -117,15 +120,27 @@ export function reviewerPrompt({
   task,
   base,
   schema,
+  risk,
+  findings = [],
   permissions,
 }: {
   task: Task;
   /** The merge-base of the Task branch with the Phase branch. */
   base: string;
   schema: JSONSchema;
+  risk?: { flag: string; reason: string }[];
+  findings?: Finding[];
   permissions: PermissionProfile;
 }) {
   const range = `${base}..HEAD`;
+  const risks = new Map<string, string[]>();
+  for (const entry of risk ??
+    task.risk?.flags.map((flag) => ({
+      flag,
+      reason: task.risk?.reason ?? "",
+    })) ??
+    [])
+    risks.set(entry.reason, [...(risks.get(entry.reason) ?? []), entry.flag]);
   return document([
     "You are reviewing one Task of a Segno Plan, in this worktree. Its tests passed.",
     `# Task: ${task.title}`,
@@ -134,16 +149,19 @@ export function reviewerPrompt({
     task.acceptance
       .map((criterion, index) => `${index}. ${criterion}`)
       .join("\n"),
-    ...(task.risk
+    ...(risks.size
       ? [
           "## Risk",
-          `Flagged ${task.risk.flags.join(", ")}: ${task.risk.reason}`,
+          ...[...risks].map(
+            ([reason, flags]) => `Flagged ${flags.join(", ")}: ${reason}`,
+          ),
         ]
       : []),
     "## Changes",
     `Review the changes in \`${range}\`, for example with \`git diff ${range}\`.`,
     "## Docs",
     "Check whether the changes alter behavior that docs describe, and whether those docs were updated to match.",
+    ...findingsSection(findings),
     ...shellSection(permissions),
     "## Verdict",
     "Answer with a Verdict that matches this JSON Schema. In `acceptance`, `index` is the criterion's number above.",
@@ -160,6 +178,7 @@ export function docsPrompt({
   base,
   baseBranch,
   changelog,
+  findings = [],
   permissions,
 }: {
   plan: Plan;
@@ -171,6 +190,7 @@ export function docsPrompt({
   base: string;
   baseBranch: string;
   changelog: string;
+  findings?: Finding[];
   permissions: PermissionProfile;
 }) {
   return document([
@@ -196,6 +216,7 @@ export function docsPrompt({
     "## Changes",
     `The Phase's changes are \`${base}..HEAD\`, against \`${baseBranch}\`.`,
     ...(phase.docs ? ["## Docs to write", phase.docs] : []),
+    ...findingsSection(findings),
     ...shellSection(permissions),
     "## Changelog",
     `Add entries for user-visible changes to \`${changelog}\`.`,
@@ -289,4 +310,29 @@ export function probeSpec({
     env: { SEGNO: "1", SEGNO_RUN_ID: runId, SEGNO_SLOT: "0" },
     transcriptPath,
   };
+}
+
+function findingsSection(findings: Finding[]) {
+  return findings.length
+    ? [
+        "## Open blocking Findings",
+        list(
+          findings.map(({ file, line, body }) =>
+            file ? `${file}${line ? `:${line}` : ""}: ${body}` : body,
+          ),
+        ),
+      ]
+    : [];
+}
+
+/** A repair is a follow-up in the same session when resume is available. */
+export function repairPrompt(
+  errors: unknown[],
+  permissions: PermissionProfile,
+) {
+  return document([
+    "Repair the Verdict. Correct these validation errors and return a complete Verdict:",
+    fenced(errors),
+    ...shellSection(permissions),
+  ]);
 }

@@ -178,6 +178,27 @@ function Card({
     >
       <span className="task-id">{task.id}</span>
       <span className="card-title">{task.title}</span>
+      <span className="row">
+        <span className="badge badge-muted">R {task.budgets.review}/2</span>
+        <span className="badge badge-muted">T {task.budgets.test}/2</span>
+        {task.budgets.infra > 0 && (
+          <span className="badge badge-muted">I {task.budgets.infra}/3</span>
+        )}
+      </span>
+      {task.blockReason && (
+        <span className="badge badge-bad">{task.blockReason}</span>
+      )}
+      {task.waitReason && <span className="muted">{task.waitReason}</span>}
+      {task.paused && <span className="badge badge-muted">paused</span>}
+      {task.highRisk && (
+        <span
+          className="badge badge-warn"
+          title={task.risk.map(({ reason }) => reason).join("; ")}
+        >
+          High risk:{" "}
+          {[...new Set(task.risk.map(({ flag }) => flag))].join(", ")}
+        </span>
+      )}
       {(holder || task.queuedToMerge) && (
         <span className="row">
           {holder && <RoleDot holder={holder} live={Boolean(task.run)} />}

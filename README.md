@@ -2,7 +2,7 @@
 
 Segno is a local desktop app that drives AI agents through a software development cycle while the developer supervises. One app holds many Projects; each Plan is an ordered list of Phases that end in pull requests.
 
-**v1 is unreleased.** The workspace, Plan file library, offline Plan validation, the Engine's persisted Plan lifecycle, the Engine host, the desktop app shell and the Claude Code Adapter are implemented. You can add Projects, onboard them with an agent or set them up by hand, and submit, review and approve Plans. An approved Plan's first Phase runs its Tasks with Claude Code, through code, tests, review and the merge queue, onto the Phase branch. Failure paths (B6), pushing the Phase branch and opening its PR (B9), and recovery after a restart and the rate-limit pause (B8) are not built yet.
+**v1 is unreleased.** The workspace, Plan file library, offline Plan validation, the Engine's persisted Plan lifecycle, the Engine host, the desktop app shell and the Claude Code Adapter are implemented. You can add Projects, onboard them with an agent or set them up by hand, and submit, review and approve Plans. An approved Plan's first Phase runs its Tasks with Claude Code, through code, tests, review and the merge queue, onto the Phase branch. Failure paths, fixed retry budgets, high-risk Merge holds and developer Approve / Send back are implemented. Pushing the Phase branch and opening its PR (B9), and recovery after a restart and the rate-limit pause (B8) are not built yet.
 
 ## Run the app from a checkout
 
@@ -50,7 +50,7 @@ For a demo without using your subscription, start the app with the fake agent, w
 SEGNO_FAKE_ADAPTER=1 SEGNO_APP_DATA=$(mktemp -d) pnpm dev
 ```
 
-A failed or rejected step leaves its Task where it is until B6 handles failures. Restarting the app while a Plan is running leaves it where it stopped until B8 adds recovery.
+Failing tests and rejected reviews return to coding and block on the second failure. Infra failures retry after 30 seconds and 2 minutes, then block on the third failure. Malformed Verdicts are repaired, and high-risk Tasks wait for approval. The board shows Block reasons, budgets and dependency waits; the drawer shows review history and developer Findings. Restarting the app while a Plan is running leaves it where it stopped until B8 adds recovery.
 
 ## Run Plan validation from a checkout
 
@@ -105,7 +105,7 @@ A Project without config and without any submitted Plan is `not-onboarded`: its 
 ## Development checks
 
 ```sh
-pnpm check:b5
+pnpm check:b6
 ```
 
 This chains `pnpm check:b4`, `pnpm check:b3.1` and `pnpm check:b3`: `pnpm check:b2` (the build, Biome, every Vitest suite including the S3 Engine, S4 git and S6 host tests on real git repos with bare remotes, and the B2 exit scenario), then builds the app and drives it end to end with Playwright (S9) on temporary repos, a temporary app data directory and the fake Adapter. S9 needs a display; CI runs it under `xvfb-run` on Node 24. `pnpm test:e2e` reruns only S9 against the last app build.

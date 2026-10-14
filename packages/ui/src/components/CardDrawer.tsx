@@ -7,10 +7,12 @@ import {
 } from "@segno/core";
 import { useEffect, useId, useState } from "react";
 import { errorMessage } from "../format.js";
+import { Review } from "./Review.js";
 import { RunLog } from "./RunLog.js";
+import { TaskActions } from "./TaskActions.js";
 import { holderOf, RoleDot } from "./TaskBoard.js";
 
-const tabs = ["Diff", "Tests", "Transcript"] as const;
+const tabs = ["Diff", "Review", "Tests", "Transcript"] as const;
 type Tab = (typeof tabs)[number];
 const roleLabels: Record<string, string> = {
   coder: "Coder",
@@ -58,6 +60,20 @@ export function CardDrawer({
         </button>
       </header>
       <div className="drawer-body">
+        {task.blockReason && (
+          <span className="badge badge-bad">{task.blockReason}</span>
+        )}
+        {task.risk.map(({ flag, reason }, index) => (
+          <p
+            // biome-ignore lint/suspicious/noArrayIndexKey: The risk history is append-only.
+            key={index}
+          >
+            <span className="badge badge-warn">{flag}</span> {reason}
+          </p>
+        ))}
+        {task.state === "held" && (
+          <TaskActions client={client} projectId={projectId} taskId={task.id} />
+        )}
         <section className="drawer-definition" aria-label="Definition">
           <p className="prose">{definition.description}</p>
           <div>
@@ -99,6 +115,8 @@ export function CardDrawer({
         >
           {tab === "Diff" ? (
             <DiffView client={client} projectId={projectId} task={task} />
+          ) : tab === "Review" ? (
+            <Review task={task} />
           ) : (
             <RunList
               client={client}

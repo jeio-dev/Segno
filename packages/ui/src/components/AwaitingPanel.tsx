@@ -1,11 +1,16 @@
-import type { AwaitingItem } from "@segno/core";
+import type { AwaitingItem, HostClient } from "@segno/core";
 import { age } from "../format.js";
+import { TaskActions } from "./TaskActions.js";
 
 /** The selected Project's Awaiting-you items, oldest first. */
 export function AwaitingPanel({
   items,
   onReview,
+  client,
+  projectId,
 }: {
+  client: HostClient;
+  projectId: string;
   items: AwaitingItem[] | undefined;
   onReview(item: AwaitingItem): void;
 }) {
@@ -29,6 +34,13 @@ export function AwaitingPanel({
             </div>
             <span className="awaiting-item-title">{item.title}</span>
             <span className="muted">{age(item.createdAt)}</span>
+            {item.kind === "merge-hold" && item.taskId && (
+              <TaskActions
+                client={client}
+                projectId={projectId}
+                taskId={item.taskId}
+              />
+            )}
             <div className="row">
               <button
                 type="button"
@@ -37,7 +49,9 @@ export function AwaitingPanel({
               >
                 {item.kind === "plan-approval"
                   ? "Review plan"
-                  : "Review proposal"}
+                  : item.kind === "onboarding-review"
+                    ? "Review proposal"
+                    : "Review task"}
               </button>
             </div>
           </li>

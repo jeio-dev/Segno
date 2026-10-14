@@ -175,6 +175,7 @@ test("the board shows each Task's column state, wait reason, current Run and the
         paused: false,
         budgets: { review: 0, test: 0, infra: 0 },
         highRisk: false,
+        risk: [],
         run: { id: runId, kind: "coder", role: "coder" },
       },
       {
@@ -184,6 +185,7 @@ test("the board shows each Task's column state, wait reason, current Run and the
         paused: false,
         budgets: { review: 0, test: 0, infra: 0 },
         highRisk: false,
+        risk: [],
         waitReason: "needs a",
       },
       {
@@ -193,6 +195,7 @@ test("the board shows each Task's column state, wait reason, current Run and the
         paused: false,
         budgets: { review: 0, test: 0, infra: 0 },
         highRisk: false,
+        risk: [],
         waitReason: "needs a",
       },
     ],

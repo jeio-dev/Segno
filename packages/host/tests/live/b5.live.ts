@@ -81,19 +81,15 @@ async function untilDone(client: HostClient, id: string, timeout: number) {
     const states = tasks.map(({ state }) => state);
     if (states.length > 0 && states.every((state) => state === "done"))
       return states;
-    for (const { id: taskId } of tasks) {
-      const task = await client.query(id, "task", { taskId });
-      for (const run of task.runs) {
-        if (run.outcome && run.outcome !== "completed")
-          throw new Error(
-            `${taskId}: the ${run.kind} Run ended ${run.outcome}: ${run.detail ?? "no detail"}`,
-          );
-        const approved = task.verdicts.some(({ runId }) => runId === run.id);
-        if (run.kind === "reviewer" && run.outcome && !approved)
-          throw new Error(
-            `${taskId}: the Reviewer didn't approve: ${await answerOf(client, id, run.id)}`,
-          );
-      }
+    for (const card of tasks) {
+      if (card.state !== "blocked" && card.state !== "held") continue;
+      const task = await client.query(id, "task", { taskId: card.id });
+      const latest = task.verdicts.at(-1);
+      const approved = latest?.verdict.decision === "approve";
+      const run = task.runs.at(-1);
+      throw new Error(
+        `${card.id}: ${card.state}${card.blockReason ? ` (${card.blockReason})` : ""}; latest review ${approved ? "approved" : (latest?.verdict.decision ?? "missing")}: ${latest?.verdict.summary ?? (run ? await answerOf(client, id, run.id) : "no result")}; ${run?.detail ?? ""}`,
+      );
     }
     if (Date.now() > deadline)
       throw new Error(`Timed out with the Tasks ${states.join(", ")}.`);

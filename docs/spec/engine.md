@@ -151,7 +151,7 @@ An infra failure is any of these [brief §Principles] [ADR-0019] [ADR-0016] [ADR
 - a failed setup Run
 - a git operation that fails without a conflict
 
-Each one uses 1 infra budget, and the step reruns after a backoff of **30 s, 2 min, then 5 min** [ADR-0019]. When the budget is exhausted, the Block reason is `verdict-invalid` if the last failure was a malformed Verdict, `setup-failed` if it was the setup Run, and `infra-limit` otherwise [ADR-0016] [ADR-0029].
+Each one uses 1 infra budget, and the step reruns after a backoff of **30 s after the first failure and 2 min after the second** [ADR-0019] [ADR-0060]. The third failure blocks immediately without another retry or delay. When the budget is exhausted, the Block reason is `verdict-invalid` if the last failure was a malformed Verdict, `setup-failed` if it was the setup Run, and `infra-limit` otherwise [ADR-0016] [ADR-0029].
 
 Interruptions (restart, pause, stop and retry, a Rate-limit pause) are **not** infra failures and use no budget [ADR-0014] [ADR-0020] [ADR-0021].
 

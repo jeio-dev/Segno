@@ -3,6 +3,7 @@ import type {
   BlockReason,
   Budget,
   Event,
+  Finding,
   PhaseStatus,
   PlanStatus,
   RunKind,
@@ -49,6 +50,8 @@ export interface TaskState {
   budgets: Record<Budget, number>;
   blockReason?: BlockReason;
   highRisk: boolean;
+  risk: { flag: string; reason: string }[];
+  findings: (Finding & { open: boolean })[];
   worktree?: { path: string; branch: string };
   /** The seq at which the Task last entered merging: its merge-queue place. */
   mergingSince?: number;
@@ -60,6 +63,12 @@ export interface TaskState {
     cause: string;
   }[];
   runIds: string[];
+  malformedVerdicts: {
+    seq: number;
+    runId: string;
+    errors: unknown[];
+    raw?: string;
+  }[];
   verdicts: { seq: number; runId: string; verdict: Verdict }[];
 }
 
@@ -82,7 +91,7 @@ export interface RunState {
 
 export interface AwaitingItem {
   id: number;
-  kind: "plan-approval" | "onboarding-review";
+  kind: "plan-approval" | "onboarding-review" | "blocked" | "merge-hold";
   /** Set for every item about a Plan. */
   planId?: string;
   phaseId?: string;
@@ -278,9 +287,16 @@ export function project(events: readonly Event[]): State {
             paused: false,
             budgets: { review: 0, test: 0, infra: 0 },
             highRisk: Boolean(task.risk),
+            risk:
+              task.risk?.flags.map((flag) => ({
+                flag,
+                reason: task.risk?.reason ?? "",
+              })) ?? [],
+            findings: [],
             history: [],
             runIds: [],
             verdicts: [],
+            malformedVerdicts: [],
           });
         break;
       }
@@ -292,9 +308,48 @@ export function project(events: readonly Event[]): State {
         else delete task.blockReason;
         if (to === "merging") task.mergingSince = event.seq;
         else delete task.mergingSince;
+        state.awaiting = state.awaiting.filter(
+          (item) => item.planId !== task.planId || item.taskId !== task.id,
+        );
+        if (to === "blocked" || to === "held")
+          state.awaiting.push({
+            id: event.seq,
+            kind: to === "held" ? "merge-hold" : "blocked",
+            planId: task.planId,
+            phaseId: task.phaseId,
+            taskId: task.id,
+            title: task.definition.title,
+            createdAt: event.ts,
+          });
         task.history.push({ seq: event.seq, ts: event.ts, from, to, cause });
         break;
       }
+      case "task.riskRaised": {
+        const task = taskOf(event.payload.taskId);
+        task.highRisk = true;
+        task.risk.push(
+          ...event.payload.flags.map((flag) => ({
+            flag,
+            reason: event.payload.reason,
+          })),
+        );
+        break;
+      }
+      case "task.findingAdded":
+        taskOf(event.payload.taskId).findings.push({
+          ...copy(event.payload.finding),
+          open: true,
+        });
+        break;
+      case "task.findingsClosed":
+        for (const finding of taskOf(event.payload.taskId).findings)
+          if (event.payload.findingIds.includes(finding.id))
+            finding.open = false;
+        break;
+      case "task.budgetUsed":
+        taskOf(event.payload.taskId).budgets[event.payload.budget] =
+          event.payload.count;
+        break;
       case "task.worktreeCreated":
         taskOf(event.payload.taskId).worktree = {
           path: event.payload.path,
@@ -332,6 +387,16 @@ export function project(events: readonly Event[]): State {
         // A rate-limited onboarding Run records no failure (B8 pauses it).
         if (outcome === "rate-limited" && state.onboarding.runId === runId)
           state.onboarding = { state: "idle" };
+        break;
+      }
+      case "verdict.malformed": {
+        const { runId, errors, raw } = event.payload;
+        taskOf(event.payload.taskId).malformedVerdicts.push({
+          seq: event.seq,
+          runId,
+          errors: copy(errors),
+          ...(raw === undefined ? {} : { raw }),
+        });
         break;
       }
       case "verdict.recorded":

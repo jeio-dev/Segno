@@ -90,7 +90,9 @@ const approvesWithAdvice: FakeScript = async (run) => {
     schemaVersion: 1,
     decision: "approve",
     summary: `Approved ${run.spec.env.SEGNO_TASK_ID}.`,
-    acceptance: [],
+    acceptance: (run.spec.env.SEGNO_TASK_ID === "b" ? [0] : [0, 1]).map(
+      (index) => ({ index, met: true, note: "Met." }),
+    ),
     docs: { needed: false, satisfied: true, note: "" },
     findings: [
       {

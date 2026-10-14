@@ -1,18 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, open, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   type AgentAdapter,
+  type BlockReason,
   type EffectiveConfig,
   type EventPayloads,
   type EventType,
+  type Finding,
   holdsSlot,
   type PhaseState,
   type PlanState,
   type RunOutcome,
   type RunOutputItem,
-  type RunResult,
   type RunState,
   type State,
   type TaskState,
@@ -25,6 +26,7 @@ import {
   coderPrompt,
   docsPrompt,
   permissionsFor,
+  repairPrompt,
   reviewerPrompt,
 } from "./context.js";
 import {
@@ -38,6 +40,7 @@ import {
   removeTaskWorktree,
 } from "./git.js";
 import {
+  type AgentResult,
   ended as endLive,
   type LimitEvent,
   type LiveRuns,
@@ -46,11 +49,19 @@ import {
 } from "./live.js";
 import { runScript, type ScriptResult } from "./script.js";
 
+/** Unpersisted drafts; the emitter resolves Verdict references atomically. */
 export type Draft = {
-  [T in EventType]: { type: T; payload: EventPayloads[T] };
+  [T in EventType]: {
+    type: T;
+    payload: T extends "task.findingsClosed"
+      ? Omit<EventPayloads[T], "byVerdictSeq"> & { byVerdictRunId: string }
+      : EventPayloads[T];
+  };
 }[EventType];
 
 interface WorkDeps {
+  now(): Date;
+  setTimer(at: Date, fire: () => void): () => void;
   repo: string;
   projectDir: string;
   config(): EffectiveConfig;
@@ -68,14 +79,61 @@ function describe(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** A Run whose run.started is ready to append, and how to start it after. */
+interface Repair {
+  errors: unknown[];
+  runId: string;
+  sessionId?: string;
+}
+
+/** Read only the final 200 lines, keeping UTF-8 decoding at line boundaries. */
+async function readLogTail(path: string) {
+  const file = await open(path, "r");
+  try {
+    let position = (await file.stat()).size;
+    const chunks: Buffer[] = [];
+    let newlines = 0;
+    while (position > 0 && newlines < 201) {
+      const size = Math.min(position, 64 * 1024);
+      position -= size;
+      const chunk = Buffer.alloc(size);
+      const { bytesRead } = await file.read(chunk, 0, size, position);
+      const bytes = chunk.subarray(0, bytesRead);
+      chunks.push(bytes);
+      for (const byte of bytes) if (byte === 10) newlines++;
+    }
+    const bytes = Buffer.concat(chunks.reverse());
+    let end = bytes.length;
+    if (bytes[end - 1] === 10) end--;
+    let start = 0;
+    let lines = 0;
+    for (let index = end - 1; index >= 0; index--) {
+      if (bytes[index] === 10 && ++lines === 200) {
+        start = index + 1;
+        break;
+      }
+    }
+    return bytes.subarray(start, end).toString("utf8");
+  } finally {
+    await file.close();
+  }
+}
+
+type Preparation = (scope: Scope) => PreparedRun | Promise<PreparedRun>;
+
+type Retry = (scope: Scope) => Promise<void>;
+
+/** A Run ready to record and launch, with the preparation to retry. */
 interface PreparedRun {
+  prepare: Preparation;
   started: Draft;
   launch(): void;
 }
 
 /** The context every Task step works in. */
 interface Scope {
+  state: State;
+  testFailure?: string;
+  conflicts?: string[];
   plan: PlanState;
   phase: PhaseState & { branch: string };
   task: TaskState;
@@ -88,11 +146,57 @@ const slot = "0";
 export function openWork(deps: WorkDeps) {
   const { repo, projectDir, readState, emit, internal, live } = deps;
 
-  function transition(task: TaskState, to: TaskStatus, cause: string): Draft {
+  const timers = new Set<() => void>();
+  const preparationRetries = new Set<string>();
+  const runPreparations = new Map<string, Preparation>();
+
+  function transition(
+    task: TaskState,
+    to: TaskStatus,
+    cause: string,
+    blockReason?: BlockReason,
+  ): Draft {
     return {
       type: "task.transitioned",
-      payload: { taskId: task.id, from: task.state, to, cause },
+      payload: {
+        taskId: task.id,
+        from: task.state,
+        to,
+        cause,
+        ...(blockReason ? { blockReason } : {}),
+      },
     };
+  }
+
+  function openBlocking(task: TaskState) {
+    return task.findings.filter(
+      (finding) => finding.open && finding.severity === "blocking",
+    );
+  }
+
+  function toFinding(
+    finding: Verdict["findings"][number],
+    runId: string,
+  ): Finding {
+    return {
+      severity: finding.severity,
+      body: finding.body,
+      ...(finding.file === undefined ? {} : { file: finding.file }),
+      ...(finding.line === undefined ? {} : { line: finding.line }),
+      id: randomUUID(),
+      source: "reviewer",
+      createdInRun: runId,
+    };
+  }
+
+  /** Setup and merge share the test timeout (runners.md § Timeouts). */
+  function deadline(expire: () => void) {
+    return deps.setTimer(
+      new Date(
+        deps.now().getTime() + (deps.config().tests.timeoutMin ?? 15) * 60_000,
+      ),
+      expire,
+    );
   }
 
   function runDir(runId: string) {
@@ -125,7 +229,7 @@ export function openWork(deps: WorkDeps) {
 
   /** The Run context for an agent Run, built from fixed ingredients [ADR-0024]. */
   async function contextFor(
-    { plan, phase, task }: Scope,
+    { state, plan, phase, task }: Scope,
     kind: "coder" | "docs" | "reviewer",
     cwd: string,
   ) {
@@ -141,6 +245,8 @@ export function openWork(deps: WorkDeps) {
           task: task.definition,
           base,
           schema: verdictJsonSchema,
+          risk: task.risk,
+          findings: openBlocking(task),
           permissions,
         }),
         outputSchema: verdictJsonSchema,
@@ -153,12 +259,13 @@ export function openWork(deps: WorkDeps) {
           phase: definition,
           task: task.definition,
           testsCommand: config.tests.command,
+          findings: openBlocking(task),
           permissions,
         }),
       };
     if (!phase.baseSha) throw new Error(`Phase ${phase.id} has no base.`);
-    const done = readState()
-      .tasks.filter(
+    const done = state.tasks
+      .filter(
         (other) =>
           other.planId === plan.id &&
           other.phaseId === phase.id &&
@@ -182,6 +289,7 @@ export function openWork(deps: WorkDeps) {
         base: phase.baseSha,
         baseBranch: config.baseBranch,
         changelog: config.docs.changelog,
+        findings: openBlocking(task),
         permissions,
       }),
     };
@@ -190,6 +298,7 @@ export function openWork(deps: WorkDeps) {
   async function prepareAgentRun(
     scope: Scope,
     kind: "coder" | "docs" | "reviewer",
+    repair?: Repair,
   ): Promise<PreparedRun> {
     const config = deps.config();
     const role = kind === "reviewer" ? "reviewer" : "coder";
@@ -202,14 +311,41 @@ export function openWork(deps: WorkDeps) {
         : config.roles[role].model;
     const worktree = scope.task.worktree;
     if (!worktree) throw new Error(`Task ${scope.task.id} has no worktree.`);
-    const { prompt, outputSchema } = await contextFor(
-      scope,
-      kind,
-      worktree.path,
-    );
+    const context = await contextFor(scope, kind, worktree.path);
+    if (kind !== "reviewer") {
+      const tests = scope.state.runs.findLast(
+        (run) => scope.task.runIds.includes(run.id) && run.kind === "tests",
+      );
+      const failed =
+        scope.testFailure ??
+        (tests?.outcome === "failed" || tests?.outcome === "timeout"
+          ? tests.id
+          : undefined);
+      if (failed) {
+        const path = join(projectDir, "runs", failed, "output.log");
+        const tail = await readLogTail(path).catch(() => "Log unavailable.");
+        context.prompt += `\n## Failing test log\n\nFull log: ${path}\n\n${tail}\n`;
+      }
+    }
+    const conflicts =
+      scope.conflicts ??
+      (kind !== "reviewer" &&
+      scope.task.history.at(-1)?.cause === "merge-conflict"
+        ? (await git(worktree.path, "diff", "--name-only", "--diff-filter=U"))
+            .split("\n")
+            .filter(Boolean)
+        : []);
+    if (conflicts.length)
+      context.prompt += `\n## Conflicting files\n\n${conflicts.join("\n")}\n`;
+    const resume = repair && adapter.capabilities.resume && repair.sessionId;
+    const prompt = repair
+      ? `${resume ? "" : context.prompt}${repairPrompt(repair.errors, permissionsFor(kind, config))}`
+      : context.prompt;
+    const outputSchema = context.outputSchema;
     const runId = randomUUID();
     const dir = runDir(runId);
     return {
+      prepare: (next) => prepareAgentRun(next, kind, repair),
       started: {
         type: "run.started",
         payload: {
@@ -218,18 +354,28 @@ export function openWork(deps: WorkDeps) {
           kind,
           role,
           adapter: adapter.id,
+          ...(resume ? { resumeOf: repair.runId } : {}),
           model,
         },
       },
       launch() {
         launchAgentRun({
           adapter,
+          deadlines: {
+            now: deps.now,
+            setTimer: deps.setTimer,
+            wallMs:
+              (config.roles[role].timeoutMin ?? (role === "coder" ? 45 : 15)) *
+              60_000,
+            idleMs: (config.idleTimeoutMin ?? 10) * 60_000,
+          },
           spec: {
             runId,
             kind,
             model,
             cwd: worktree.path,
             prompt,
+            ...(resume ? { resumeSessionId: resume } : {}),
             // The whole context is in prompt.md, so the record is exact [ADR-0033].
             systemPrompt: "",
             permissions: permissionsFor(kind, config),
@@ -258,6 +404,7 @@ export function openWork(deps: WorkDeps) {
     const worktree = scope.task.worktree;
     if (!worktree) throw new Error(`Task ${scope.task.id} has no worktree.`);
     return {
+      prepare: (next) => prepareScriptRun(next, kind, command),
       started: {
         type: "run.started",
         payload: {
@@ -275,14 +422,26 @@ export function openWork(deps: WorkDeps) {
           logPath: join(dir, "output.log"),
           onOutput: (text) => send(runId, { kind: "output", text }),
         });
+        let timeout = false;
+        const cancel = deadline(() => {
+          timeout = true;
+          void script.stop();
+        });
         live.set(runId, {
-          stop: script.stop,
+          stop: async () => {
+            cancel();
+            await script.stop();
+          },
           listeners: new Set(),
           output: [],
         });
-        void script.result.then((result) =>
-          internal(() => settle(runId, () => finishScriptRun(runId, result))),
-        );
+        void script.result.then(async (result) => {
+          if (timeout) await script.stop();
+          cancel();
+          internal(() =>
+            settle(runId, () => finishScriptRun(runId, { ...result, timeout })),
+          );
+        });
       },
     };
   }
@@ -293,13 +452,25 @@ export function openWork(deps: WorkDeps) {
     const worktree = scope.task.worktree;
     if (!worktree) throw new Error(`Task ${scope.task.id} has no worktree.`);
     return {
+      prepare: prepareMergeRun,
       started: {
         type: "run.started",
         payload: { runId, taskId: scope.task.id, kind: "merge", role: "none" },
       },
       launch() {
+        const controller = new AbortController();
+        let timeout = false;
+        const cancel = deadline(() => {
+          timeout = true;
+          controller.abort();
+        });
+        let settled: Promise<unknown>;
         live.set(runId, {
-          stop: async () => {},
+          stop: async () => {
+            cancel();
+            controller.abort();
+            await settled;
+          },
           listeners: new Set(),
           output: [],
         });
@@ -309,11 +480,15 @@ export function openWork(deps: WorkDeps) {
           send(runId, { kind: "output", text });
         };
         say(`Merging ${scope.phase.branch} into ${worktree.branch}\n`);
-        void mergePhaseInto(worktree.path, {
-          phase: scope.phase.branch,
-          taskId: scope.task.id,
-          message: `segno: merge ${scope.phase.branch}`,
-        })
+        settled = mergePhaseInto(
+          worktree.path,
+          {
+            phase: scope.phase.branch,
+            taskId: scope.task.id,
+            message: `segno: merge ${scope.phase.branch}`,
+          },
+          controller.signal,
+        )
           .then(
             (result): MergeResult | { kind: "error"; detail: string } => {
               if (result.kind === "up-to-date") say("Already up to date.\n");
@@ -329,11 +504,14 @@ export function openWork(deps: WorkDeps) {
             },
           )
           .then(async (result) => {
+            cancel();
             // The outcome counts even if its log can't be written.
             await writeFile(join(dir, "output.log"), lines.join("")).catch(
               () => {},
             );
-            internal(() => settle(runId, () => finishMergeRun(runId, result)));
+            internal(() =>
+              settle(runId, () => finishMergeRun(runId, result, timeout)),
+            );
           });
       },
     };
@@ -344,20 +522,26 @@ export function openWork(deps: WorkDeps) {
     emit([...drafts, ...runs.map(({ started }) => started)], planId);
     for (const run of runs)
       try {
+        const { runId } = run.started.payload as { runId: string };
+        runPreparations.set(runId, run.prepare);
         run.launch();
       } catch (error) {
-        // A Run that can't start still gets its outcome (B6 handles crashes).
+        // A Run that cannot start still consumes infra budget.
         const { runId } = run.started.payload as { runId: string };
-        commit(planId, [
-          finished(runId, "crashed", { detail: describe(error) }),
-        ]);
+        const scope = scopeOf(runId);
+        if (scope)
+          infraFailure(
+            scope,
+            [finished(runId, "crashed", { detail: describe(error) })],
+            retryRun(run.prepare),
+          );
         ended(runId, "crashed");
       }
   }
 
   /**
    * Processes a Run's outcome. If that fails (a git error, say), the Run is
-   * recorded `failed` so it never stays live; B6 makes it an infra failure.
+   * recorded `failed` and consumes infra budget.
    */
   async function settle(runId: string, finish: () => Promise<void>) {
     try {
@@ -365,9 +549,11 @@ export function openWork(deps: WorkDeps) {
     } catch (error) {
       const scope = scopeOf(runId);
       if (scope)
-        commit(scope.plan.id, [
-          finished(runId, "failed", { detail: describe(error) }),
-        ]);
+        infraFailure(
+          scope,
+          [finished(runId, "failed", { detail: describe(error) })],
+          retryFor(runId),
+        );
       ended(runId, scope ? "failed" : "stopped");
       deps.onError(error);
     }
@@ -390,12 +576,19 @@ export function openWork(deps: WorkDeps) {
     const plan = state.plans.find(({ id }) => id === task?.planId);
     const phase = plan?.phases.find(({ id }) => id === task?.phaseId);
     if (!task || !plan || !phase?.branch) return undefined;
-    return { run, task, plan, phase: { ...phase, branch: phase.branch } };
+    return {
+      state,
+      run,
+      task,
+      plan,
+      phase: { ...phase, branch: phase.branch },
+    };
   }
 
   /** Ends the live stream once the Run's outcome is recorded. */
   function ended(runId: string, outcome: RunOutcome) {
     endLive(live, runId, outcome);
+    runPreparations.delete(runId);
   }
 
   async function recordSession(runId: string, sessionId: string) {
@@ -406,36 +599,221 @@ export function openWork(deps: WorkDeps) {
     ]);
   }
 
-  async function finishAgentRun(runId: string, result: RunResult) {
+  /** Keeps a decided outcome even if preparing its next Run fails. */
+  async function advance(scope: Scope, drafts: Draft[], prepare: Preparation) {
+    let prepared: PreparedRun;
+    try {
+      prepared = await prepare(scope);
+    } catch (error) {
+      infraFailure(scope, drafts, retryRun(prepare));
+      deps.onError(error);
+      return;
+    }
+    commit(scope.plan.id, drafts, [prepared]);
+  }
+
+  function retryRun(prepare: Preparation): Retry {
+    return (next) => advance(next, [], prepare);
+  }
+
+  function retryFor(runId: string): Retry {
+    const prepare = runPreparations.get(runId);
+    if (!prepare) throw new Error(`Run ${runId} has no prepared step.`);
+    return retryRun(prepare);
+  }
+
+  function infraFailure(
+    scope: Scope,
+    drafts: Draft[],
+    retry: Retry,
+    reason: BlockReason = "infra-limit",
+  ) {
+    const { task, plan } = scope;
+    const count = task.budgets.infra + 1;
+    drafts.push({
+      type: "task.budgetUsed",
+      payload: { taskId: task.id, budget: "infra", count },
+    });
+    if (count >= 3)
+      drafts.push(transition(task, "blocked", "infra-exhausted", reason));
+    commit(plan.id, drafts);
+    if (count >= 3) return;
+    const key = `${plan.id}/${task.id}`;
+    preparationRetries.add(key);
+    const cancel = deps.setTimer(
+      new Date(deps.now().getTime() + (count === 1 ? 30_000 : 120_000)),
+      () => {
+        timers.delete(cancel);
+        preparationRetries.delete(key);
+        internal(async () => {
+          const state = readState();
+          const current = state.tasks.find(
+            (other) => other.planId === plan.id && other.id === task.id,
+          );
+          if (!current || current.state !== task.state || current.paused)
+            return;
+          const next = { ...scope, state, task: current };
+          try {
+            await retry(next);
+          } catch (error) {
+            infraFailure(next, [], retry);
+            deps.onError(error);
+          }
+        });
+      },
+    );
+    timers.add(cancel);
+  }
+
+  async function finishAgentRun(runId: string, result: AgentResult) {
     const scope = scopeOf(runId);
     if (!scope) return ended(runId, "stopped");
     const { plan, task, run } = scope;
     if (result.kind !== "completed") {
-      // Failure paths are B6 and rate limits B8; the Task waits here until then.
       const outcome = result.kind;
-      commit(plan.id, [finished(runId, outcome, { detail: result.detail })]);
+      const drafts = [finished(runId, outcome, { detail: result.detail })];
+      if (outcome === "rate-limited") commit(plan.id, drafts);
+      else infraFailure(scope, drafts, retryFor(runId));
       return ended(runId, outcome);
     }
     if (run.kind === "reviewer") {
-      // Only a Verdict that matches its schema counts; repair is B6.
+      if (result.structured !== undefined)
+        await writeFile(
+          join(runDir(runId), "verdict.json"),
+          `${JSON.stringify(result.structured, null, 2)}\n`,
+        );
+      // Schema and semantic consistency are both required [ADR-0016].
       const parsed = verdictSchema.safeParse(result.structured);
       const verdict: Verdict | undefined = parsed.success
         ? parsed.data
         : undefined;
-      const approved = verdict?.decision === "approve" && !task.highRisk;
-      // Rejections, malformed Verdicts and held Tasks are B6.
-      commit(plan.id, [
+      const errors: unknown[] = parsed.success ? [] : [...parsed.error.issues];
+      if (verdict) {
+        if (
+          verdict.acceptance.length !== task.definition.acceptance.length ||
+          task.definition.acceptance.some(
+            (_, index) =>
+              verdict.acceptance.filter((entry) => entry.index === index)
+                .length !== 1,
+          )
+        )
+          errors.push(
+            "acceptance must contain exactly one entry for each criterion index",
+          );
+        const unmet = verdict.acceptance.some(({ met }) => !met);
+        const blocking = verdict.findings.some(
+          ({ severity }) => severity === "blocking",
+        );
+        if (
+          verdict.decision === "approve" &&
+          (unmet ||
+            blocking ||
+            (verdict.docs.needed && !verdict.docs.satisfied))
+        )
+          errors.push(
+            "approve requires all criteria met, docs satisfied and no blocking Findings",
+          );
+        if (verdict.decision === "reject" && !unmet && !blocking)
+          errors.push(
+            "reject requires an unmet criterion or a blocking Finding",
+          );
+      }
+      if (!verdict || errors.length) {
+        infraFailure(
+          scope,
+          [
+            finished(runId, "completed"),
+            {
+              type: "verdict.malformed",
+              payload: {
+                runId,
+                taskId: task.id,
+                errors,
+                raw: JSON.stringify(result.structured) ?? result.finalText,
+              },
+            },
+          ],
+          retryRun((next) =>
+            prepareAgentRun(next, "reviewer", {
+              errors,
+              runId,
+              ...(run.sessionId ? { sessionId: run.sessionId } : {}),
+            }),
+          ),
+          "verdict-invalid",
+        );
+        return ended(runId, "completed");
+      }
+      const drafts: Draft[] = [
         finished(runId, "completed"),
-        ...(verdict?.decision === "approve"
-          ? [
-              {
-                type: "verdict.recorded",
-                payload: { runId, taskId: task.id, verdict },
-              } satisfies Draft,
-            ]
-          : []),
-        ...(approved ? [transition(task, "merging", "review-approved")] : []),
-      ]);
+        {
+          type: "verdict.recorded",
+          payload: { runId, taskId: task.id, verdict },
+        },
+      ];
+      for (const risk of verdict.risk ?? [])
+        drafts.push({
+          type: "task.riskRaised",
+          payload: {
+            taskId: task.id,
+            flags: [risk.flag],
+            reason: risk.reason,
+            byRunId: runId,
+          },
+        });
+      const open = task.findings.filter(({ open }) => open);
+      if (open.length)
+        drafts.push({
+          type: "task.findingsClosed",
+          payload: {
+            taskId: task.id,
+            findingIds: open.map(({ id }) => id),
+            byVerdictRunId: runId,
+          },
+        });
+      const findings = verdict.findings.map((finding) =>
+        toFinding(finding, runId),
+      );
+      for (const finding of findings)
+        drafts.push({
+          type: "task.findingAdded",
+          payload: { taskId: task.id, finding },
+        });
+      if (verdict.decision === "reject") {
+        const count = task.budgets.review + 1;
+        drafts.push(
+          {
+            type: "task.budgetUsed",
+            payload: { taskId: task.id, budget: "review", count },
+          },
+          count >= 2
+            ? transition(task, "blocked", "review-rejected", "review-limit")
+            : transition(task, "coding", "review-rejected"),
+        );
+        const next = {
+          ...scope,
+          task: {
+            ...task,
+            state: "coding" as const,
+            budgets: { ...task.budgets, review: count },
+            findings: findings.map((finding) => ({ ...finding, open: true })),
+          },
+        };
+        if (count >= 2) commit(plan.id, drafts);
+        else
+          await advance(next, drafts, (next) =>
+            prepareAgentRun(next, isDocs(next) ? "docs" : "coder"),
+          );
+      } else {
+        drafts.push(
+          transition(
+            task,
+            task.highRisk || verdict.risk?.length ? "held" : "merging",
+            "review-approved",
+          ),
+        );
+        commit(plan.id, drafts);
+      }
       return ended(runId, "completed");
     }
     // Coder and Docs Runs: anything uncommitted is committed first [ADR-0029].
@@ -445,8 +823,8 @@ export function openWork(deps: WorkDeps) {
       message: `segno: uncommitted changes (${runId})`,
       taskId: task.id,
     });
-    commit(
-      plan.id,
+    await advance(
+      { ...scope, task: { ...task, state: "testing" } },
       [
         finished(runId, "completed"),
         ...(sha
@@ -459,7 +837,7 @@ export function openWork(deps: WorkDeps) {
           : []),
         transition(task, "testing", "coder-completed"),
       ],
-      [prepareScriptRun(scope, "tests", deps.config().tests.command)],
+      (next) => prepareScriptRun(next, "tests", deps.config().tests.command),
     );
     ended(runId, "completed");
   }
@@ -470,32 +848,61 @@ export function openWork(deps: WorkDeps) {
     const { plan, task, run } = scope;
     const exit =
       result.exitCode === undefined ? {} : { exitCode: result.exitCode };
-    if (result.exitCode !== 0) {
-      // Test failures and failed setup Runs are B6.
+    const outcome = result.timeout ? "timeout" : "failed";
+    if (result.timeout || result.exitCode !== 0) {
+      if (run.kind === "tests") {
+        const count = task.budgets.test + 1;
+        const drafts: Draft[] = [
+          finished(runId, outcome, exit),
+          {
+            type: "task.budgetUsed",
+            payload: { taskId: task.id, budget: "test", count },
+          },
+          count >= 2
+            ? transition(task, "blocked", "tests-failed", "test-limit")
+            : transition(task, "coding", "tests-failed"),
+        ];
+        if (count >= 2) commit(plan.id, drafts);
+        else
+          await advance(
+            {
+              ...scope,
+              testFailure: runId,
+              task: {
+                ...task,
+                state: "coding",
+                budgets: { ...task.budgets, test: count },
+              },
+            },
+            drafts,
+            (next) => prepareAgentRun(next, isDocs(next) ? "docs" : "coder"),
+          );
+        return ended(runId, outcome);
+      }
+      // Failed setup Runs consume infra budget [ADR-0029].
       const detail = result.error ?? result.signal;
-      commit(plan.id, [
-        finished(runId, "failed", { ...exit, ...(detail ? { detail } : {}) }),
-      ]);
-      return ended(runId, "failed");
+      infraFailure(
+        scope,
+        [finished(runId, outcome, { ...exit, ...(detail ? { detail } : {}) })],
+        retryFor(runId),
+        "setup-failed",
+      );
+      return ended(runId, outcome);
     }
     const done = finished(runId, "completed", exit);
     if (run.kind === "setup") {
       // Setup comes before the first Coder Run, or before a merge re-test.
-      commit(
-        plan.id,
-        [done],
-        [
-          task.state === "merging"
-            ? prepareScriptRun(scope, "tests", deps.config().tests.command)
-            : await prepareAgentRun(scope, isDocs(scope) ? "docs" : "coder"),
-        ],
+      await advance(scope, [done], (next) =>
+        task.state === "merging"
+          ? prepareScriptRun(next, "tests", deps.config().tests.command)
+          : prepareAgentRun(next, isDocs(next) ? "docs" : "coder"),
       );
     } else if (task.state === "merging") await land(scope, [done]);
     else
-      commit(
-        plan.id,
+      await advance(
+        { ...scope, task: { ...task, state: "reviewing" } },
         [done, transition(task, "reviewing", "tests-passed")],
-        [await prepareAgentRun(scope, "reviewer")],
+        (next) => prepareAgentRun(next, "reviewer"),
       );
     ended(runId, "completed");
   }
@@ -503,16 +910,45 @@ export function openWork(deps: WorkDeps) {
   async function finishMergeRun(
     runId: string,
     result: MergeResult | { kind: "error"; detail: string },
+    timeout = false,
   ) {
     const scope = scopeOf(runId);
     if (!scope) return ended(runId, "stopped");
-    if (result.kind === "conflict" || result.kind === "error") {
-      // Conflicts and git failures are B6.
-      const detail =
-        result.kind === "error"
-          ? result.detail
-          : `Conflicts in ${result.files.join(", ")}.`;
-      commit(scope.plan.id, [finished(runId, "failed", { detail })]);
+    if (timeout) {
+      infraFailure(
+        scope,
+        [finished(runId, "timeout", { detail: "Merge wall-clock timeout" })],
+        retryFor(runId),
+      );
+      return ended(runId, "timeout");
+    }
+    if (result.kind === "conflict") {
+      await advance(
+        {
+          ...scope,
+          conflicts: result.files,
+          task: { ...scope.task, state: "coding" },
+        },
+        [
+          finished(runId, "failed", {
+            detail: `Conflicts in ${result.files.join(", ")}.`,
+          }),
+          {
+            type: "merge.conflicted",
+            payload: { taskId: scope.task.id, files: result.files },
+          },
+          transition(scope.task, "coding", "merge-conflict"),
+        ],
+        (next) => prepareAgentRun(next, isDocs(next) ? "docs" : "coder"),
+      );
+      return ended(runId, "failed");
+    }
+    if (result.kind === "error") {
+      infraFailure(
+        scope,
+        [finished(runId, "failed", { detail: result.detail })],
+        retryFor(runId),
+      );
       return ended(runId, "failed");
     }
     const done = finished(runId, "completed");
@@ -520,14 +956,10 @@ export function openWork(deps: WorkDeps) {
     // The re-test is skipped when the Phase branch hasn't moved [ADR-0005].
     if (result.kind === "up-to-date") await land(scope, [done]);
     else
-      commit(
-        scope.plan.id,
-        [done],
-        [
-          result.lockfileChanged && setup
-            ? prepareScriptRun(scope, "setup", setup.command)
-            : prepareScriptRun(scope, "tests", tests.command),
-        ],
+      await advance(scope, [done], (next) =>
+        result.lockfileChanged && setup
+          ? prepareScriptRun(next, "setup", setup.command)
+          : prepareScriptRun(next, "tests", tests.command),
       );
     ended(runId, "completed");
   }
@@ -589,18 +1021,52 @@ export function openWork(deps: WorkDeps) {
       );
       return true;
     }
+    const sentBacks = tasks.filter(
+      (task) =>
+        task.state === "coding" &&
+        task.history.at(-1)?.cause === "developer-sent-back" &&
+        !state.runs.some(
+          (run) =>
+            run.taskId === task.id && run.seq > (task.history.at(-1)?.seq ?? 0),
+        ),
+    );
+    const sentBack = sentBacks[0];
+    const activeStep = tasks.some(
+      (task) =>
+        ["coding", "testing", "reviewing"].includes(task.state) &&
+        !sentBacks.includes(task),
+    );
+    const merging = tasks.some(
+      (task) =>
+        task.state === "merging" &&
+        state.runs.some(
+          (run) =>
+            task.runIds.includes(run.id) && run.seq > (task.mergingSince ?? 0),
+        ),
+    );
+    if (sentBack && !live.size && !activeStep && !merging) {
+      const scope = { state, plan, phase, task: sentBack };
+      if (preparationRetries.has(`${plan.id}/${sentBack.id}`)) return false;
+      await advance(scope, [], (next) =>
+        prepareAgentRun(next, isDocs(next) ? "docs" : "coder"),
+      );
+      return true;
+    }
     // Only one Task is in the merge step at a time, in arrival order [ADR-0005].
     const [head] = tasks
       .filter(({ state }) => state === "merging")
       .sort((a, b) => (a.mergingSince ?? 0) - (b.mergingSince ?? 0));
     if (
       head &&
+      !activeStep &&
+      !live.size &&
       !state.runs.some(
         ({ taskId, seq }) =>
           taskId === head.id && seq > (head.mergingSince ?? 0),
       )
     ) {
-      commit(plan.id, [], [prepareMergeRun({ plan, phase, task: head })]);
+      if (preparationRetries.has(`${plan.id}/${head.id}`)) return false;
+      await advance({ state, plan, phase, task: head }, [], prepareMergeRun);
       return true;
     }
     if (tasks.some(({ state }) => holdsSlot(state))) return false;
@@ -608,7 +1074,14 @@ export function openWork(deps: WorkDeps) {
       ({ state, paused }) => state === "ready" && !paused,
     );
     if (!next || !adapterFor("coder")) return false;
-    await startTask({ plan, phase, task: next });
+    if (preparationRetries.has(`${plan.id}/${next.id}`)) return false;
+    const scope = { state, plan, phase, task: next };
+    try {
+      await startTask(scope);
+    } catch (error) {
+      infraFailure(scope, [], startTask);
+      deps.onError(error);
+    }
     return true;
   }
 
@@ -621,11 +1094,13 @@ export function openWork(deps: WorkDeps) {
     await createTaskWorktree(repo, { path, branch, from: phase.branch });
     const started: Scope = {
       ...scope,
-      task: { ...task, worktree: { path, branch } },
+      task: { ...task, state: "coding", worktree: { path, branch } },
     };
     const setup = deps.config().setup;
-    commit(
-      plan.id,
+    // Successful acquisition is recorded even if preparing the first Run
+    // fails. Retry that preparation against this worktree; abandon owns it.
+    await advance(
+      started,
       [
         {
           type: "task.worktreeCreated",
@@ -633,11 +1108,10 @@ export function openWork(deps: WorkDeps) {
         },
         transition(task, "coding", "slot-free"),
       ],
-      [
+      (next) =>
         setup
-          ? prepareScriptRun(started, "setup", setup.command)
-          : await prepareAgentRun(started, isDocs(started) ? "docs" : "coder"),
-      ],
+          ? prepareScriptRun(next, "setup", setup.command)
+          : prepareAgentRun(next, isDocs(next) ? "docs" : "coder"),
     );
   }
 
@@ -693,5 +1167,12 @@ export function openWork(deps: WorkDeps) {
     };
   }
 
-  return { step, abandon };
+  return {
+    step,
+    abandon,
+    close() {
+      for (const cancel of timers) cancel();
+      timers.clear();
+    },
+  };
 }
