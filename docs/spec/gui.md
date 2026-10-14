@@ -18,23 +18,39 @@ The GUI is a pure client of the Engine host ([api.md](api.md)). It sends Command
 | **Planning** (v1.2) | a Planning session thread |
 | **Settings** | app settings and the selected Project's settings |
 
-Sources: [brief §The GUI] [ADR-0010] [ADR-0038] [ADR-0039].
+Sources: [brief §The GUI] [ADR-0010] [ADR-0038] [ADR-0039] [ADR-0049].
 
 ## Projects
 
 - **Sidebar.** Lists every Project from `projects.list` by name, with its Awaiting-you count. **Add project** opens the add-project flow [ADR-0038].
 - **Unavailable Projects.** A Project whose folder is gone, is no longer a git repo, whose effective config is invalid, or whose Event log can't be replayed is shown as unavailable with the reason and every config error. It offers **Locate…** (`projects.locate`) and **Remove**. Its Engine isn't running, and the other Projects are unaffected [ADR-0038] [ADR-0047].
+- **Not onboarded Projects.** A Project with no `segno.config.json` and no Plan ever submitted shows the onboarding call to action on its board ([Onboarding](#onboarding)). Its Engine is running [ADR-0049].
 - **Remove** asks whether to also delete the Project's Segno data (Event log, Runs and worktrees), then sends `projects.remove`. The repo is never touched [ADR-0038].
 
 ## Adding a Project
 
-This follows [ADR-0039].
+This follows [ADR-0039] as amended by [ADR-0049].
 
 1. The developer picks a folder. `projects.inspect` refuses a folder that isn't a git top-level (`not-a-repo`), has no remote (`no-remote`) or is already a Project (`already-added`), and the reason is shown.
-2. **With a `segno.config.json`,** its validation result is shown, and **Add** registers the Project as it is.
-3. **Without one,** the detected settings are shown for review and editing: package manager, test command, setup command, base branch, a model per Role (planner, coder, coder-docs, reviewer), and `Bash(<package-manager> *)` in the Coder's `allow`. **Add** writes them as `segno.config.json` and registers the Project.
+2. **With a `segno.config.json`,** its validation result is shown, and **Add** registers the Project as it is. There is no onboarding.
+3. **Without one,** the dialog shows only a model per agent Role: Planner, Coder and Reviewer, prefilled with `opus`, `sonnet` and `opus`. **Add** registers the Project with them as its pending config and opens its board, where the Project is _not onboarded_. The Docs model is `haiku`, and the Adapter is Claude Code, without being asked.
 4. A missing or logged-out `gh` shows a warning, and adding still works [ADR-0023].
 5. Segno never commits the file. Until `segno.config.json` is on the base branch, the Project shows a hint to commit it.
+
+### Onboarding
+
+A _not onboarded_ Project's board shows, in place of the Plan empty state [ADR-0049]:
+
+- **Onboard project** sends `onboarding.start`. While the Run is live, the board shows its live output and **Stop onboarding** (`onboarding.stop`), which returns the Project to the call to action.
+- **Set up manually** opens the settings form: package manager, test command, setup command, base branch, and `Bash(<package-manager> *)` in the Coder's `allow`, prefilled by detection. **Save** sends `onboarding.confirm` with the form's config. It stays disabled until the test command is filled.
+- **A failed onboarding** shows its reason, with **Retry onboarding** and **Set up manually**.
+
+A finished onboarding is an `onboarding-review` item ([Awaiting you](#awaiting-you)). Its review shows:
+- each proposed value, with the agent's one-line reason
+- every command the agent ran, with its exit code and duration, and the ref it ran on
+- the flags: **No checks found** (`no-checks`) and **Fails on the base branch** (`fails-on-base`) with the failing tests listed
+
+**Confirm** sends `onboarding.confirm` with the proposal's config. With `no-checks`, it's enabled only after the developer ticks "Every Task will pass tests unchecked". With `fails-on-base`, it warns that Tasks will be blocked `test-limit` until the suite is fixed. **Edit** opens the Set up manually form, prefilled with the proposal.
 
 ## Board
 
@@ -125,6 +141,7 @@ Typing in these inputs is allowed. Every one of them becomes a Command the Engin
 
 - **Location.** A panel beside the board, listing the selected Project's `awaiting` items oldest first, with a count badge. Other Projects' counts show in the sidebar and their total on the tray icon [brief §Where the developer steps in] [ADR-0041].
 - **Actions.** Each item shows its kind, Task or Plan id, title and age, plus the actions that resolve it [ADR-0013] [ADR-0023]:
+  - `onboarding-review`: Confirm / Edit, with the review in [Onboarding](#onboarding)
   - `plan-approval`: Approve / Send back / Abandon, with the full Plan readable
   - `merge-hold`: Approve / Send back / Take over
   - `blocked`: opens the drawer
@@ -150,7 +167,7 @@ These follow [ADR-0041].
 | Section | Contents | Source |
 |---|---|---|
 | App | editor command, notifications, theme, start at login (off by default), and **Install the `segno` command** (`cli.install`) | [ADR-0041] [ADR-0042] [ADR-0032] |
-| Project | name (`projects.rename`), `worktreeRoot`, per-Role models (as in [Global controls](#global-controls)), **Prune runs now** with a days field (`store.prune`), and **Remove project** | [ADR-0038] [ADR-0033] [ADR-0046] |
+| Project | name (`projects.rename`), `worktreeRoot`, per-Role models (as in [Global controls](#global-controls); the pending config's models while not onboarded), **Prune runs now** with a days field (`store.prune`), and **Remove project** | [ADR-0038] [ADR-0033] [ADR-0046] [ADR-0049] |
 
 ## History
 

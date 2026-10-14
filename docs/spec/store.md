@@ -40,17 +40,20 @@ Segno keeps everything it stores under the app's data directory: `SEGNO_APP_DATA
   projects/<id>/
     segno.db               the Project's Event log
     local.json             per-Project local settings (see config.md)
+    pending.json           the models chosen at Add, until onboarded (see config.md)
     runs/<run-id>/
       prompt.md            exactly what the Run was given (agent Runs)
       transcript.jsonl     raw agent CLI output (agent Runs)
       output.log           combined stdout and stderr (tests, setup, merge, probe Runs)
       verdict.json         the Verdict exactly as received (Reviewer Runs), even if malformed
+      proposal.json        the onboarding proposal exactly as received (onboarding Runs)
     tasks/<task-id>/
       merged.diff          the Task's final diff against the Phase branch, written when it reaches done
     worktrees/<task-id>/   Task worktrees, unless worktreeRoot is set
+    worktrees/_onboarding/ the scratch worktree of a live onboarding Run (never a Task id)
 ```
 
-Sources: [ADR-0033] [ADR-0038] [ADR-0025] [ADR-0009] [ADR-0048].
+Sources: [ADR-0033] [ADR-0038] [ADR-0025] [ADR-0009] [ADR-0048] [ADR-0049].
 
 - **The registry.** `projects.json` holds `{ id, name, path, addedAt }` for each Project. `id` is generated when the Project is added and never reused. `name` defaults to the folder name. The registry is app state, not an Event log, and only the app-level calls in [api.md](api.md#app-level-calls) change it, including `projects.rename` [ADR-0038] [ADR-0046].
 - **One Project is one repo.** A folder whose git top-level is already registered can't be added again [ADR-0039].
@@ -65,6 +68,7 @@ Sources: [ADR-0033] [ADR-0038] [ADR-0025] [ADR-0009] [ADR-0048].
 - **Deleted, together with its Task branch,** when the Task becomes `done` or `superseded`, or its Plan is abandoned [brief §Housekeeping] [ADR-0033].
 - **Deleted and recreated** on replan [ADR-0015].
 - **Never shared** between Tasks.
+- **Onboarding's scratch worktree** is `_onboarding/` in the same place, detached at the detected base branch's remote-tracking ref, with no branch. It's deleted when the onboarding Run ends [ADR-0049].
 
 ## Branches
 

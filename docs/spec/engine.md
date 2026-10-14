@@ -190,12 +190,43 @@ Each correction records `watchdog.corrected { taskId, violation, action }` [ADR-
 - **Startup** happens when the app launches, and for one Project when it's added or located ([api.md](api.md#app-level-calls)) [ADR-0038].
 - **Shutdown.** Quitting the app, or SIGINT or SIGTERM, stops live Runs in every Project, records them as `interrupted`, flushes, and exits. Closing the window is not a shutdown [ADR-0020] [ADR-0041].
 
+## Onboarding
+
+This follows [ADR-0049].
+
+- **When a Project is not onboarded:** its repo has no `segno.config.json` and its Event log has no `plan.submitted`. Its Engine runs with the pending config ([config.md](config.md#pending-config)). It accepts only the `onboarding.*` Commands, `store.prune` and `config.setModel` (which writes the pending config), and rejects every other Command `not-onboarded`.
+- **`onboarding.start`** starts one `onboarding` Run as the Planner ([runners.md](runners.md#run-kinds)). The Run uses:
+  - the pending config's Planner model
+  - a scratch worktree, detached at the detected base branch's remote-tracking ref
+  - the run slot, like any agent Run
+
+  It's rejected `invalid-transition` while an onboarding Run is live or a proposal awaits confirmation.
+- **The Run ends in exactly one of these Events:**
+  - **`onboarding.proposed`** carries a valid proposal ([runners.md](runners.md#onboarding-proposal)) and creates `onboarding-review`.
+  - **`onboarding.failed`** records a `reason`:
+    - `unable`: the agent said it can't onboard, with its explanation
+    - `invalid-proposal`: the output is missing or fails the schema or config validation, with the errors
+    - `crashed`, `timeout` or `hung`
+
+    Onboarding has no budget, and `onboarding.start` retries.
+- **The scratch worktree** is deleted when the Run ends, whatever the outcome.
+- **`onboarding.stop`** stops the live Run. It's recorded as `run.finished { outcome: stopped }` and `onboarding.stopped`.
+- **Restarts and rate limits.** An interrupted onboarding Run reruns on startup, as any interrupted step does. A rate-limited one waits under the rate-limit pause. Neither records a failure.
+- **`onboarding.confirm { config }`** validates `config`, overlaid with the pending config's models, exactly as `segno.config.json` is validated ([config.md](config.md#validation)). A failure is rejected `validation`, with the config errors. On success, the Engine:
+  1. writes `segno.config.json` without committing it
+  2. deletes the pending config
+  3. records `onboarding.confirmed { via: proposal | manual }`, where `proposal` means an `onboarding-review` was open, and resolves it
+
+  It's rejected `invalid-transition` while an onboarding Run is live, or when the Project is already onboarded.
+- **A config that appears by itself** (for example a teammate's commit is pulled) onboards the Project. The Engine records `onboarding.confirmed { via: file }`, deletes the pending config and withdraws any open `onboarding-review`. Before B8's config watching, this is noticed when the Engine starts.
+
 ## Awaiting you
 
-The Awaiting-you queue is derived state. Its item kinds are [brief §Where the developer steps in] [ADR-0023] [ADR-0010]:
+The Awaiting-you queue is derived state. Its item kinds are [brief §Where the developer steps in] [ADR-0023] [ADR-0010] [ADR-0049]:
 
 | Kind | Created by | Resolved by |
 |---|---|---|
+| `onboarding-review` | `onboarding.proposed` | `onboarding.confirm`, `onboarding.start`, `onboarding.confirmed { via: file }` [ADR-0049] |
 | `plan-approval` | `plan.submitted` | `plan.approve`, `plan.sendBack`, `plan.abandon` |
 | `merge-hold` | approve on a high-risk Task | `task.approve`, `task.sendBack`, `task.takeOver` |
 | `blocked` | any transition into `blocked` | leaving `blocked` |
@@ -212,6 +243,8 @@ Every Command is `{ type, ...payload }`, sent to one Project's Engine. It's vali
 
 | `type` | Payload | Version |
 |---|---|---|
+| `onboarding.start` / `onboarding.stop` | `{}` | v1 |
+| `onboarding.confirm` | `{ config: object }` (a `segno.config.json` without `roles.<role>.model`, which come from the pending config) | v1 |
 | `plan.submit` | `{ yaml: string, sourcePath?: string }` | v1 |
 | `plan.approve` | `{ planId }` | v1 |
 | `plan.sendBack` | `{ planId, notes: string≥1 }` | v1 |
@@ -239,7 +272,7 @@ Every Command is `{ type, ...payload }`, sent to one Project's Engine. It's vali
 | `task.askPlanner` | `{ taskId, text?: string }` | v1.2 |
 | `task.applyPlannerAdvice` | `{ taskId, adviceId }` | v1.2 |
 
-Sources: [ADR-0013] [ADR-0015] [ADR-0021] [ADR-0023] [ADR-0025] [ADR-0010] [ADR-0030] [ADR-0042].
+Sources: [ADR-0013] [ADR-0015] [ADR-0021] [ADR-0023] [ADR-0025] [ADR-0010] [ADR-0030] [ADR-0042] [ADR-0049].
 
 ### Rejection codes
 
@@ -252,6 +285,7 @@ Sources: [ADR-0013] [ADR-0015] [ADR-0021] [ADR-0023] [ADR-0025] [ADR-0010] [ADR-
 | `reason-required` | `plan.abandon` or `task.forceApprove` without a non-blank reason |
 | `notes-required` | `plan.sendBack` or `task.sendBack` without non-blank notes |
 | `unsupported-in-version` | a Command marked for a later version than the running one |
+| `not-onboarded` | any Command other than `onboarding.*`, `store.prune` and `config.setModel` while the Project is not onboarded [ADR-0049] |
 
 ## Event catalog
 
@@ -259,6 +293,11 @@ Every Event carries `seq` (gap-free, starting at 1), `type`, `v` (the schema ver
 
 | `type` | Payload |
 |---|---|
+| `onboarding.started` | `runId` |
+| `onboarding.proposed` | `runId, proposal` (the proposal with its evidence and flags, [runners.md](runners.md#onboarding-proposal)) |
+| `onboarding.failed` | `runId, reason: unable \| invalid-proposal \| crashed \| timeout \| hung, detail?, errors?` |
+| `onboarding.stopped` | `runId` |
+| `onboarding.confirmed` | `via: proposal \| manual \| file, config?` (the written config, absent for `file`) |
 | `plan.submitted` | `planId, slug, plan` (the full parsed Plan), `sourcePath?` |
 | `plan.approved` / `plan.returned` / `plan.abandoned` / `plan.completed` | `planId`, plus `notes` or `reason` where the Command required one |
 | `phase.startDeferred` | `phaseId, reason, nextAttemptAt` |
@@ -282,7 +321,7 @@ Every Event carries `seq` (gap-free, starting at 1), `type`, `v` (the schema ver
 | `task.split` | `taskId, newTasks[], rewiredDependents[]` |
 | `task.forceApproved` | `taskId, reason` |
 | `task.takenOver` / `task.handedBack` | `taskId` |
-| `run.started` | `runId, taskId?, sessionKind?, kind: coder \| docs \| reviewer \| planner \| tests \| setup \| merge \| probe, role, adapter?, model?, resumeOf?` |
+| `run.started` | `runId, taskId?, sessionKind?, kind: coder \| docs \| reviewer \| planner \| onboarding \| tests \| setup \| merge \| probe, role, adapter?, model?, resumeOf?` |
 | `run.sessionStarted` | `runId, sessionId` |
 | `run.finished` | `runId, outcome: completed \| failed \| crashed \| timeout \| hung \| rate-limited \| interrupted \| stopped, exitCode?, detail?, resetAt?` |
 | `verdict.recorded` | `runId, taskId, verdict` (the full Verdict, kept forever) |
@@ -301,6 +340,6 @@ Every Event carries `seq` (gap-free, starting at 1), `type`, `v` (the schema ver
 | `planning.closed` **(v1.2)** | `sessionId, outcome: drafted \| discarded` |
 | `planner.adviceRecorded` **(v1.2)** | `taskId, adviceId, advice` |
 
-Sources: [ADR-0007] [ADR-0013] [ADR-0014] [ADR-0015] [ADR-0016] [ADR-0019] [ADR-0020] [ADR-0021] [ADR-0023] [ADR-0025] [ADR-0029] [ADR-0031] [ADR-0033] [ADR-0010].
+Sources: [ADR-0007] [ADR-0013] [ADR-0014] [ADR-0015] [ADR-0016] [ADR-0019] [ADR-0020] [ADR-0021] [ADR-0023] [ADR-0025] [ADR-0029] [ADR-0031] [ADR-0033] [ADR-0010] [ADR-0049].
 
 Transcripts and live Run output are **never** Events [ADR-0007].

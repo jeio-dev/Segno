@@ -46,7 +46,7 @@ v1 is **the desktop app** on Linux and macOS [ADR-0042] [ADR-0037]. On Windows i
   - restart recovery
   - multiple Phases per Plan
 - Many Projects in one app, each running independently with `concurrency` fixed at `1`. Config rejects any other value in v1 ([config.md](config.md)) [ADR-0038] [ADR-0040].
-- Adding a Project, with detection and a reviewed `segno.config.json` [ADR-0039].
+- Adding a Project with only a model per agent Role, then onboarding it: a Planner Run proposes a verified `segno.config.json` that the developer confirms, or the developer sets it up by hand [ADR-0039] [ADR-0049].
 - The app data directory, worktrees outside the repo, the setup command and Run pruning ([store.md](store.md)).
 - The Claude Code Adapter only, with per-Role allowlists ([runners.md](runners.md)).
 - The Engine host and its IPC protocol ([api.md](api.md)) [ADR-0037].

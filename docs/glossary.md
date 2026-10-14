@@ -8,6 +8,10 @@ Segno is a local app that drives a small team of AI agents through a software de
 A git repo added to Segno, with its own Plans, board, Event log and settings. One app holds many Projects, and each repo can be added only once.
 _Avoid_: workspace (that is the pnpm workspace), repo (when the Segno-side record is meant), plan
 
+**Onboarding**:
+The one-time step that makes a newly added Project ready to run Plans: an agent works out the repo's test and setup commands and proves they pass, and the developer confirms the resulting config. A Project without a config is not onboarded until it is confirmed or set up by hand.
+_Avoid_: setup (that is the setup command), workspace setup, init, bootstrap
+
 ## Planning
 
 **Plan**:
@@ -43,7 +47,7 @@ The code-hosting service where Phase PRs are opened and merges are detected, rea
 _Avoid_: remote (that's the git remote), host, provider
 
 **Awaiting you**:
-The queue of everything that needs the developer: Plans to approve, Merge holds, Blocked Tasks and Phase PRs ready to merge. Nothing else asks for attention.
+The queue of everything that needs the developer: onboarding proposals to confirm, Plans to approve, Merge holds, Blocked Tasks and Phase PRs ready to merge. Nothing else asks for attention.
 _Avoid_: inbox, notifications, todo
 
 ## Work
@@ -175,7 +179,7 @@ One of the four kinds of participant that work a Task: Planner, Coder, Reviewer,
 _Avoid_: agent type, persona
 
 **Planner**:
-The agent Role that agrees scope with the developer, writes Plans, and helps audit Blocked Tasks.
+The agent Role that onboards Projects, agrees scope with the developer, writes Plans, and helps audit Blocked Tasks.
 _Avoid_: architect, PM
 
 **Coder**:

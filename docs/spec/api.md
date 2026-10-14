@@ -55,11 +55,12 @@ Every call is a request with one response, except the two streams. Calls that ac
 | `planExport` | `{ planId }` | the Plan as YAML text, in the export form of [plan-format.md](plan-format.md#export) |
 | `phases` | none | archived Phases (History): `{ id, planId, title, state, prUrl?, startedAt, mergedAt? }[]` |
 | `phaseEvents` | `{ phaseId }` | every Event belonging to that Phase, for replay |
-| `config` | none | `{ effective, sources, rejected, committed }`: the effective config with defaults filled; the source of every leaf (`file`, `local`, `default`), keyed by JSON pointer; the latest unresolved `config.rejected` as `{ seq, source, errors }`, or `null`; and whether `segno.config.json` is on `<remote>/<baseBranch>`, which shows the commit hint while `false` ([gui.md](gui.md#adding-a-project)) [ADR-0047] |
+| `config` | none | `{ effective, sources, rejected, committed, pending }`: the effective config with defaults filled (`null` while not onboarded); the source of every leaf (`file`, `local`, `default`), keyed by JSON pointer; the latest unresolved `config.rejected` as `{ seq, source, errors }`, or `null`; and whether `segno.config.json` is on `<remote>/<baseBranch>`, which shows the commit hint while `false` ([gui.md](gui.md#adding-a-project)) [ADR-0047]; and the pending config while not onboarded, otherwise `null` [ADR-0049] |
+| `onboarding` | none | `{ state, runId?, proposal?, failure?, detected }`: `state` is `idle`, `running`, `proposed`, `failed` or `done`; the latest proposal with its evidence and flags, or the failure reason; and the detected settings that prefill Set up manually ([gui.md](gui.md#onboarding)) [ADR-0049] |
 
 Unknown ids get the error `not-found`.
 
-Sources: [ADR-0022] [ADR-0007] [ADR-0025] [ADR-0033] [ADR-0012] [ADR-0037] [ADR-0047] [brief §The GUI].
+Sources: [ADR-0022] [ADR-0007] [ADR-0025] [ADR-0033] [ADR-0012] [ADR-0037] [ADR-0047] [ADR-0049] [brief §The GUI].
 
 ## Local actions
 
@@ -84,13 +85,13 @@ Sources: [ADR-0022] [ADR-0007] [ADR-0025] [ADR-0033] [ADR-0012] [ADR-0037] [ADR-
 
 ## App-level calls
 
-These act on the app, not on one Project's Engine, and write no Event [ADR-0038] [ADR-0039] [ADR-0042] [ADR-0046].
+These act on the app, not on one Project's Engine, and write no Event [ADR-0038] [ADR-0039] [ADR-0042] [ADR-0046] [ADR-0049].
 
 | Call | Behavior |
 |---|---|
-| `projects.list()` | every Project: `{ id, name, path, status, awaitingCount }[]`, where `status` is `running`, or `unavailable` with `awaitingCount: 0`, a `reason`, a human-readable `message`, and `errors` (every config error) for `invalid-config`. `reason` is the first failing check, in this order: `missing-folder`, `not-a-repo`, `invalid-config`, `unreadable-log` ([gui.md](gui.md#projects)) [ADR-0047] |
-| `projects.inspect(path)` | checks the folder and returns the add-project proposal: the existing `segno.config.json` with its validation result, or the detected settings ([gui.md](gui.md#adding-a-project)). The error `not-a-repo`, `no-remote` or `already-added` when the folder can't be a Project |
-| `projects.add(path, config?)` | registers the Project. `config` is the reviewed settings, written as `segno.config.json` when the file doesn't exist yet. Returns `{ id }` and starts its Engine |
+| `projects.list()` | every Project: `{ id, name, path, status, awaitingCount }[]`, where `status` is `running`, `not-onboarded` (its Engine is running, [gui.md](gui.md#onboarding)) [ADR-0049], or `unavailable` with `awaitingCount: 0`, a `reason`, a human-readable `message`, and `errors` (every config error) for `invalid-config`. `reason` is the first failing check, in this order: `missing-folder`, `not-a-repo`, `invalid-config`, `unreadable-log` ([gui.md](gui.md#projects)) [ADR-0047] |
+| `projects.inspect(path)` | checks the folder and returns the add-project proposal: the existing `segno.config.json` with its validation result, or the default model per agent Role ([gui.md](gui.md#adding-a-project)) [ADR-0049]. It also reports whether `gh` is missing or logged out. The error `not-a-repo`, `no-remote` or `already-added` when the folder can't be a Project |
+| `projects.add(path, models?)` | registers the Project. When `segno.config.json` doesn't exist, `models` (`{ planner, coder, reviewer }`, each a non-empty string) becomes the Project's pending config ([config.md](config.md#pending-config)) and the Project is `not-onboarded`. An existing file is never touched, and `models` is then ignored. Returns `{ id }` and starts its Engine [ADR-0049] |
 | `projects.remove(id, { deleteData })` | stops its Engine and unregisters it. With `deleteData`, its directory under the app data directory is deleted too. The repo is never touched |
 | `projects.locate(id, path)` | points an `unavailable` Project at its moved folder. The error `not-a-repo` when the folder isn't one |
 | `projects.rename(id, name)` | sets the Project's name to the trimmed `name`. A blank name is `bad-request`. Names need not be unique [ADR-0046] |
