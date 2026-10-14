@@ -272,7 +272,11 @@ function linePos(text: string, offset: number) {
 }
 
 export type ConfigSource = "file" | "local" | "default";
-export type EffectiveConfig = SegnoConfig & { worktreeRoot?: string };
+/** A config with its defaults filled by `resolveConfig`. */
+export type EffectiveConfig = SegnoConfig & {
+  remote: string;
+  worktreeRoot?: string;
+};
 
 const roleTimeouts = { planner: 20, coder: 45, reviewer: 15 } as const;
 

@@ -1,4 +1,15 @@
 export type {
+  AdapterId,
+  AgentAdapter,
+  JSONSchema,
+  PermissionProfile,
+  RunEvent,
+  RunHandle,
+  RunResult,
+  RunSpec,
+} from "./adapter.js";
+export { boardOf } from "./board.js";
+export type {
   Command,
   CommandResult,
   Rejection,
@@ -56,12 +67,20 @@ export type {
   TaskStatus,
   Verdict,
 } from "./events.js";
-export { eventVersions } from "./events.js";
-export type { AwaitingItem, PlanState, State } from "./project.js";
-export { project } from "./project.js";
+export { agentRunKinds, eventVersions, scriptRunKinds } from "./events.js";
+export type {
+  AwaitingItem,
+  PhaseState,
+  PlanState,
+  RunState,
+  State,
+  TaskState,
+} from "./project.js";
+export { holdsSlot, project } from "./project.js";
 export type {
   ArchivedPhase,
   Board,
+  BoardTask,
   CallName,
   ConfigStatus,
   HostCalls,
@@ -76,7 +95,9 @@ export type {
   Request,
   ResolvedSettings,
   Response,
+  RunOutputItem,
   SettingsChanges,
+  TaskDetail,
 } from "./protocol.js";
 export {
   callArgsSchemas,

@@ -1,2 +1,9 @@
-export type { Clock, ConfigStore, Engine, EngineOptions } from "./engine.js";
-export { BadRequestError, openEngine } from "./engine.js";
+export type {
+  Clock,
+  ConfigStore,
+  Engine,
+  EngineOptions,
+  Workspace,
+} from "./engine.js";
+export { BadRequestError, NotFoundError, openEngine } from "./engine.js";
+export { diffAgainstPhase } from "./git.js";

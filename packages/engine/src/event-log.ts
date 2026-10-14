@@ -31,6 +31,9 @@ export function openEventLog(path: string) {
   const read = db.prepare<[number], Row>(
     "SELECT seq, type, v, ts, payload FROM events WHERE seq > ? ORDER BY seq",
   );
+  const last = db.prepare<[], { seq: number | null }>(
+    "SELECT MAX(seq) AS seq FROM events",
+  );
   const insert = db.prepare(
     "INSERT INTO events (seq, type, v, ts, plan_id, task_id, payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
   );
@@ -54,17 +57,25 @@ export function openEventLog(path: string) {
         };
       }) as Event[];
     },
-    append(event: Event) {
+    lastSeq(): number {
+      return last.get()?.seq ?? 0;
+    },
+    /**
+     * Appends every Event of one Command or Run outcome in one transaction.
+     * `planId` fills plan_id for Events about a Plan's Phases, Tasks or Runs.
+     */
+    append(events: readonly Event[], planId?: string) {
       db.transaction(() => {
-        insert.run(
-          event.seq,
-          event.type,
-          event.v,
-          event.ts,
-          "planId" in event.payload ? event.payload.planId : null,
-          "taskId" in event.payload ? event.payload.taskId : null,
-          JSON.stringify(event.payload),
-        );
+        for (const event of events)
+          insert.run(
+            event.seq,
+            event.type,
+            event.v,
+            event.ts,
+            "planId" in event.payload ? event.payload.planId : (planId ?? null),
+            "taskId" in event.payload ? event.payload.taskId : null,
+            JSON.stringify(event.payload),
+          );
       })();
     },
     close() {

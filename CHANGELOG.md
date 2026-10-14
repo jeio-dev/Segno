@@ -6,6 +6,15 @@ All notable changes to Segno are documented here, following [Keep a Changelog](h
 
 ### Added
 
+- Phases start when a Plan is approved: the remote is fetched and the Phase branch cut from `<remote>/<baseBranch>`, with the Docs task added. An unreachable remote defers the start and retries every 5 minutes.
+- Tasks run on the happy path: one Task per run slot, in Plan order, through setup, the Coder, `tests.command`, the Reviewer and the merge queue, each in its own worktree outside the repo with the `SEGNO_*` environment (ADR-0051). Leftover Coder changes are committed, every Segno commit has a `Segno-Task:` trailer, and the Phase branch moves only by fast-forward. Worktrees and Task branches are deleted once a Task is done, and its merged diff is kept.
+- Abandoning an active Plan stops its Run, supersedes unfinished Tasks and deletes their worktrees and Task branches.
+- The board's seven columns with cards, Role dots and the session meter; the card drawer with Diff, Tests and Transcript tabs and live Run output.
+- The `task`, `taskDiff`, `run`, `runTranscript` and `runPrompt` queries, Task and Run fields on `board`, and the `runOutput` stream.
+- The Agent Adapter interface types, and `@segno/engine/testing` with a fake Adapter, a fake clock and temp-repo fixtures. `SEGNO_FAKE_ADAPTER=1` runs the app with the fake Adapter until the Claude Code Adapter arrives.
+- Task diffs are kept per Plan, as Task ids are unique only within a Plan (ADR-0052), and Plan slugs avoid `segno/*` branches already in the repo (ADR-0053).
+- `pnpm check:b4`, with S3, S4, S6 and S9 coverage; CI now runs this exit check.
+
 - Models-only Project addition: Projects without config start as **Not onboarded**, with their chosen models stored in app data. **Set up manually** shows detected settings and saves an uncommitted config (ADR-0049).
 - Manual and file-based onboarding confirmation, pending config queries, and the `not-onboarded` Plan rejection. Missing pending config is recovered with the Add defaults before any Plan exists (ADR-0050).
 - `pnpm check:b3.1`, with S6 onboarding coverage and S9 manual setup journeys; CI now runs this exit check.

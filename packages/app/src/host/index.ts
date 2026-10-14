@@ -1,10 +1,34 @@
+import type { AgentAdapter } from "@segno/core";
+import { fakeAdapter, writesFiles } from "@segno/engine/testing";
 import { startHost } from "@segno/host";
 import type { MessagePortMain } from "electron";
 
 // The Engine host: an Electron utilityProcess running one Engine per Project [ADR-0037].
 const appData = process.env.SEGNO_APP_DATA;
 if (!appData) throw new Error("SEGNO_APP_DATA is not set for the Engine host.");
-const host = startHost({ appData, adapters: [] });
+
+/**
+ * The real Claude Code Adapter arrives in B5. Until then, S9 and hand demos
+ * opt in to the fake one, paced so a live Run can be watched.
+ */
+function adapters(): AgentAdapter[] {
+  if (process.env.SEGNO_FAKE_ADAPTER !== "1") return [];
+  const coder = writesFiles();
+  return [
+    fakeAdapter(
+      {
+        async coder(run) {
+          await run.output("Reading the Task.\n");
+          await run.output("Planning the change.\n");
+          return coder(run);
+        },
+      },
+      { paceMs: 700 },
+    ),
+  ];
+}
+
+const host = startHost({ appData, adapters: adapters() });
 
 function mainPort(port: MessagePortMain) {
   return {

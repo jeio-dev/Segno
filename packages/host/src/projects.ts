@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
+  type AgentAdapter,
   type ConfigError,
   defaultProjectModels,
   HostError,
@@ -13,6 +14,7 @@ import {
   pendingConfigSchema,
   pendingFromModels,
   projectModelsSchema,
+  resolveConfig,
   type SegnoConfig,
   validateConfigText,
 } from "@segno/core";
@@ -34,6 +36,8 @@ type Project = RegistryEntry &
   (
     | {
         status: "running" | "not-onboarded";
+        /** `projects/<id>/` in the app data directory. */
+        dir: string;
         pending: PendingConfig | null;
         engine: Engine;
         config: SegnoConfig | null;
@@ -48,7 +52,12 @@ type Project = RegistryEntry &
   );
 
 /** The Project registry and one Engine per running Project [ADR-0038]. */
-export function openProjects(appData: string, log: HostLog, clock: Clock) {
+export function openProjects(
+  appData: string,
+  log: HostLog,
+  clock: Clock,
+  adapters: readonly AgentAdapter[],
+) {
   const registryPath = join(appData, "projects.json");
   const projects = new Map<string, Project>();
 
@@ -121,6 +130,20 @@ export function openProjects(appData: string, log: HostLog, clock: Clock) {
         dbPath: join(projectDir(entry.id), "segno.db"),
         clock,
         isOnboarded: () => Boolean(config),
+        workspace: {
+          repo: entry.path,
+          projectDir: projectDir(entry.id),
+          config() {
+            if (!config) throw new Error("The Project is not onboarded.");
+            return resolveConfig(config, running?.local ?? local).effective;
+          },
+          adapters,
+        },
+        onError: (error) =>
+          log.write("error", "Engine work failed.", {
+            projectId: entry.id,
+            error,
+          }),
         configStore: {
           discardPending,
           async prepareOnboarding(value) {
@@ -216,6 +239,7 @@ export function openProjects(appData: string, log: HostLog, clock: Clock) {
       running = {
         ...entry,
         status: config ? "running" : "not-onboarded",
+        dir: projectDir(entry.id),
         engine,
         config: config ?? null,
         local,

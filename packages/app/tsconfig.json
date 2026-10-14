@@ -10,6 +10,7 @@
   "include": ["src/**/*.ts"],
   "references": [
     { "path": "../core" },
+    { "path": "../engine" },
     { "path": "../host" },
     { "path": "../ui" }
   ]

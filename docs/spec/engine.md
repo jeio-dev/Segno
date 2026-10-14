@@ -23,7 +23,7 @@ States: `awaiting-approval`, `active`, `complete`, `returned`, `abandoned` [ADR-
 | `active` | last Phase `merged` | `complete` (terminal) | archived to History |
 | `active` or `awaiting-approval` | `plan.abandon` (reason required) | `abandoned` (terminal) | all live Runs stopped. Every non-`done` Task → `superseded`, and its worktree and Task branch are deleted. Phase branches are kept. Segno never closes a PR [ADR-0013] |
 
-The **plan slug** comes from `title`: lower-cased, with each run of characters outside `[a-z0-9]` replaced by `-`, truncated to 40 characters, and stripped of any leading or trailing `-`. An empty result uses `plan` [ADR-0045]. If a slug is already taken by any Plan in this Project's Event log, `-2`, `-3`, … is appended [ADR-0033].
+The **plan slug** comes from `title`: lower-cased, with each run of characters outside `[a-z0-9]` replaced by `-`, truncated to 40 characters, and stripped of any leading or trailing `-`. An empty result uses `plan` [ADR-0045]. If a slug is already taken by any Plan in this Project's Event log, or by a local branch `segno/<slug>/*` or remote-tracking ref `<remote>/segno/<slug>/*` in the repo, `-2`, `-3`, … is appended [ADR-0033] [ADR-0053].
 
 ## Phase lifecycle
 
@@ -89,7 +89,7 @@ Separate from the state are:
 
 **Merge queue.** Only one Task is in the merge step at any moment. Others that reach `merging` wait in arrival order, and their cards show "queued to merge" [ADR-0005] [glossary]. A merge re-test is skipped when the Phase branch hasn't moved since the Task branch was cut [ADR-0005].
 
-**Scheduling.** When several Tasks are `ready`, they start in Plan file order: Phase order, then Task order, with split Tasks taking the position of the Task they replaced. A Docs task always comes last [ADR-0030] [ADR-0011]. In v1 there is one slot [ADR-0030].
+**Scheduling.** When several Tasks are `ready`, they start in Plan file order: Phase order, then Task order, with split Tasks taking the position of the Task they replaced. A Docs task always comes last [ADR-0030] [ADR-0011]. In v1 there is one slot [ADR-0030]. A Task holds its slot from `coding` through `testing`, `reviewing` and `merging`, and releases it when it becomes `done`, `held`, `blocked`, `taken-over` or `superseded` [ADR-0051].
 
 **Ordering of steps.** Code → Tests → Review [ADR-0003]. A rejected review is followed by Code → Tests → Review again.
 

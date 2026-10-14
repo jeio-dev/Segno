@@ -58,9 +58,9 @@ Every call is a request with one response, except the two streams. Calls that ac
 | `config` | none | `{ effective, sources, rejected, committed, pending }`: the effective config with defaults filled (`null` while not onboarded); the source of every leaf (`file`, `local`, `default`), keyed by JSON pointer; the latest unresolved `config.rejected` as `{ seq, source, errors }`, or `null`; and whether `segno.config.json` is on `<remote>/<baseBranch>`, which shows the commit hint while `false` ([gui.md](gui.md#adding-a-project)) [ADR-0047]; and the pending config while not onboarded, otherwise `null` [ADR-0049] |
 | `onboarding` | none | `{ state, runId?, proposal?, failure?, detected }`: `state` is `idle`, `running`, `proposed`, `failed` or `done`; the latest proposal with its evidence and flags, or the failure reason; and the detected settings that prefill Set up manually ([gui.md](gui.md#onboarding)) [ADR-0049] |
 
-Unknown ids get the error `not-found`.
+Unknown ids get the error `not-found`. Task ids are unique only within a Plan, so a `taskId` means the Task of the newest Plan that has it, which is the active Plan's while one is active [ADR-0052].
 
-Sources: [ADR-0022] [ADR-0007] [ADR-0025] [ADR-0033] [ADR-0012] [ADR-0037] [ADR-0047] [ADR-0049] [brief §The GUI].
+Sources: [ADR-0022] [ADR-0007] [ADR-0025] [ADR-0033] [ADR-0012] [ADR-0037] [ADR-0047] [ADR-0049] [ADR-0052] [brief §The GUI].
 
 ## Local actions
 

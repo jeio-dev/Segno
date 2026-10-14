@@ -1,5 +1,5 @@
 import { stringify } from "yaml";
-import type { Plan, Risk, Task } from "./schema.js";
+import type { Phase, Plan, Risk, Task } from "./schema.js";
 
 export interface ExportOptions {
   supersededTaskIds?: readonly string[];
@@ -36,17 +36,7 @@ export function exportPlan(plan: Plan, options: ExportOptions = {}): string {
         tasks: [
           ...tasks,
           {
-            ...(currentDocs ?? {
-              id: docsId,
-              title: "Docs and changelog",
-              description:
-                "Update the README and guides to reflect this Phase's behavior changes, and add changelog entries for user-visible changes." +
-                (phase.docs ? `\n\n${phase.docs}` : ""),
-              acceptance: [
-                "README and guides reflect the Phase's behavior changes",
-                "Changelog entries exist for user-visible changes",
-              ],
-            }),
+            ...(currentDocs ?? docsTask(phase)),
             dependsOn: tasks.map((task) => task.id),
             generated: true,
           },
@@ -55,4 +45,24 @@ export function exportPlan(plan: Plan, options: ExportOptions = {}): string {
     }),
   };
   return stringify(exported, { lineWidth: 0, blockQuote: "literal" });
+}
+
+/**
+ * The Docs task Segno adds to close a Phase: id `<phase-id>-docs`, depending
+ * on every other Task in the Phase [ADR-0011] [ADR-0044].
+ */
+export function docsTask(phase: Phase): Task {
+  const id = `${phase.id}-docs`;
+  return {
+    id,
+    title: "Docs and changelog",
+    description:
+      "Update the README and guides to reflect this Phase's behavior changes, and add changelog entries for user-visible changes." +
+      (phase.docs ? `\n\n${phase.docs}` : ""),
+    acceptance: [
+      "README and guides reflect the Phase's behavior changes",
+      "Changelog entries exist for user-visible changes",
+    ],
+    dependsOn: phase.tasks.filter((task) => task.id !== id).map(({ id }) => id),
+  };
 }

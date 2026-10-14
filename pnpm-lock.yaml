@@ -195,6 +195,9 @@ importers:
       '@segno/core':
         specifier: workspace:*
         version: link:../core
+      '@segno/engine':
+        specifier: workspace:*
+        version: link:../engine
       '@segno/host':
         specifier: workspace:*
         version: link:../host

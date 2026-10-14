@@ -38,10 +38,23 @@ export type RunKind =
   | "docs"
   | "reviewer"
   | "planner"
+  | "onboarding"
   | "tests"
   | "setup"
   | "merge"
   | "probe";
+/** Runs executed by an Adapter, which keep `prompt.md` and `transcript.jsonl`. */
+export const agentRunKinds: readonly RunKind[] = [
+  "coder",
+  "docs",
+  "reviewer",
+  "planner",
+  "onboarding",
+  "probe",
+];
+/** Runs executed by the shell or git, which keep `output.log`. */
+export const scriptRunKinds: readonly RunKind[] = ["tests", "setup", "merge"];
+
 export type RunOutcome =
   | "completed"
   | "failed"

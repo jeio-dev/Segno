@@ -1,19 +1,22 @@
-import type {
-  AwaitingItem,
-  CommandResult,
-  ConfigStatus,
-  HostClient,
-  PlanState,
-  ProjectSummary,
-  State,
+import {
+  type AwaitingItem,
+  boardOf,
+  type CommandResult,
+  type ConfigStatus,
+  type HostClient,
+  type PlanState,
+  type ProjectSummary,
+  type State,
 } from "@segno/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { errorMessage } from "../format.js";
 import type { AppStore } from "../store.js";
 import { AwaitingPanel } from "./AwaitingPanel.js";
+import { CardDrawer } from "./CardDrawer.js";
 import { Onboarding } from "./Onboarding.js";
 import { PlanReview } from "./PlanReview.js";
 import { RejectionNotice } from "./RejectionNotice.js";
+import { TaskBoard } from "./TaskBoard.js";
 
 type PlanErrors = Extract<CommandResult, { code: "validation" }>["errors"];
 
@@ -96,6 +99,26 @@ function Board({
   const awaitingItem = state?.awaiting.find(
     (item) => item.kind === "plan-approval",
   );
+  const concurrency = config?.effective?.concurrency ?? 1;
+  const board = useMemo(
+    () => (state ? boardOf(state, { concurrency }) : undefined),
+    [state, concurrency],
+  );
+  const doneOrder = useMemo(
+    () =>
+      new Map(
+        (state?.tasks ?? []).map((task) => [
+          task.id,
+          task.history.at(-1)?.seq ?? 0,
+        ]),
+      ),
+    [state],
+  );
+  const [selected, setSelected] = useState<string>();
+  const selectedTask = state?.tasks.find(
+    ({ id, planId }) => id === selected && planId === active?.id,
+  );
+  const phase = board?.phase;
 
   return (
     <section className="board" aria-label="Board">
@@ -105,18 +128,36 @@ function Board({
           <h1>{active ? active.definition.title : project.name}</h1>
           {active && (
             <div className="board-meta">
-              <span className="badge badge-info">{active.state}</span>
-              <span>First Phase not started</span>
+              {phase ? (
+                <>
+                  <span>{phase.title}</span>
+                  <span className="mono">{phase.branch}</span>
+                  <span className="badge badge-info">{phase.state}</span>
+                </>
+              ) : (
+                <>
+                  <span className="badge badge-info">{active.state}</span>
+                  <span>Starting the first Phase</span>
+                </>
+              )}
             </div>
           )}
         </div>
         {active && (
-          <ExportPlan
-            store={store}
-            client={client}
-            projectId={project.id}
-            plan={active}
-          />
+          <div className="row">
+            {board && (
+              <span className="session-meter mono" title="Session meter">
+                Sessions {board.sessions.live}/{board.sessions.concurrency} ·{" "}
+                {board.sessions.startedInPhase} this phase
+              </span>
+            )}
+            <ExportPlan
+              store={store}
+              client={client}
+              projectId={project.id}
+              plan={active}
+            />
+          </div>
         )}
       </header>
       <div className="board-body">
@@ -135,9 +176,20 @@ function Board({
             onSaved={() => store.refreshProjects()}
           />
         ) : active ? (
-          <p className="muted">
-            The board shows the active Phase once it starts.
-          </p>
+          board?.phase ? (
+            <TaskBoard
+              board={board}
+              doneOrder={doneOrder}
+              selected={selectedTask?.id}
+              onSelect={setSelected}
+            />
+          ) : (
+            <p className="muted">
+              {active.phases.find(({ state }) => state === "starting")?.deferred
+                ? "The remote is unreachable; the Phase start is retried every 5 minutes."
+                : "Fetching the remote to start the Phase."}
+            </p>
+          )
         ) : awaitingItem ? (
           <div className="empty-state">
             <h2>A Plan is awaiting your approval</h2>
@@ -154,6 +206,17 @@ function Board({
           <SubmitPlan store={store} client={client} projectId={project.id} />
         )}
       </div>
+      {selectedTask && state && (
+        <CardDrawer
+          key={selectedTask.id}
+          client={client}
+          projectId={project.id}
+          task={selectedTask}
+          card={board?.tasks.find(({ id }) => id === selectedTask.id)}
+          runs={state.runs.filter(({ taskId }) => taskId === selectedTask.id)}
+          onClose={() => setSelected(undefined)}
+        />
+      )}
     </section>
   );
 }

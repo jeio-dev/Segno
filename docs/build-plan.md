@@ -21,8 +21,8 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 | B1 | Workspace and Plan file | done | [#6](https://github.com/jeio-dev/Segno/pull/6) |
 | B2 | Event log and reducer | done | [#7](https://github.com/jeio-dev/Segno/pull/7) |
 | B3 | Engine host, app shell and Projects | done | [#8](https://github.com/jeio-dev/Segno/pull/8) |
-| B3.1 | Adding a Project without a config | done | |
-| B4 | Happy-path Task with a fake Adapter | not started | |
+| B3.1 | Adding a Project without a config | done | [#11](https://github.com/jeio-dev/Segno/pull/11) |
+| B4 | Happy-path Task with a fake Adapter | done | |
 | B5 | Claude Code Adapter | not started | |
 | B6 | Failure paths | not started | |
 | B7 | Developer Task Commands | not started | |
@@ -241,7 +241,7 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 - An existing valid config records `onboarding.confirmed { via: file }` on a new Project. Confirmation is per transition into onboarded, not once per Project: if config disappears before any Plan and the Project becomes not onboarded again, restoring the file records another confirmation at startup. Ordinary restarts do not repeat confirmation. Existing Plan history needs no retrospective confirmation. Manual confirmation keeps the Engine and its subscriptions alive.
 - Model editing (`config.setModel`), file watching and pruning remain in B8. The onboarding Run and its start/stop Commands remain in B5.
 
-**Verification:** `pnpm check:b3.1` passes on Node 24.21.0: 174 Vitest tests (46 at S6), the B2 exit scenario, and 9 S9 journeys against the built app. Code review is complete. CI is configured to run `check:b3.1`; its result is pending a developer-authorized push and PR.
+**Verification:** `pnpm check:b3.1` passes on Node 24.21.0: 174 Vitest tests (46 at S6), the B2 exit scenario, and 9 S9 journeys against the built app. Code review is complete. CI passed on [#11](https://github.com/jeio-dev/Segno/pull/11).
 
 
 ## B4: Happy-path Task with a fake Adapter
@@ -266,6 +266,19 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 - **S9:** the same Plan's cards move to Done on the board, and the drawer's Transcript tab streams a live Run.
 
 **Interim state:** the Phase stays `active` with every Task `done`. `awaiting-merge`, push and the Phase PR come in B9.
+
+**B4 implementation notes:**
+- A Task holds the run slot from `coding` through `merging` [ADR-0051], so with one slot each Task is worked end to end and, in a linear flow, the merge re-test is skipped. The merge queue is still enforced: only the earliest Task to enter `merging` runs its merge step.
+- The re-test is skipped exactly when the merge finds nothing to merge, which is when the Phase branch hasn't moved since the Task branch was cut or last merged. No Event records the cut point.
+- The app registers the fake Adapter only when `SEGNO_FAKE_ADAPTER=1`, which S9 sets. Without it, Tasks stay `ready` until B5 wires the real Adapter.
+- Not yet handled, each left for its build phase: a high-risk approve, a reject or a malformed Verdict leaves the Task in `reviewing` (B6); a failed Run, test or setup, a merge conflict, a Run that can't start and a git failure while processing an outcome record `run.finished` (`failed` or `crashed`) and leave the Task where it is (B6); nothing is recovered when an Engine reopens, so a restart mid-Plan leaves it stopped (B8). A Phase branch that can't be cut after a successful fetch is logged and the Phase stays `starting`. Agent Runs get a placeholder prompt and no `outputSchema` until B5.
+- Task ids are unique only within a Plan, so a Task id means the newest Plan's Task, and `merged.diff` is kept per Plan at `tasks/<plan-slug>/<task-id>/` [ADR-0052]. A Plan slug also avoids `segno/<slug>/*` branches left in the repo by an earlier Event log [ADR-0053].
+- `runOutput` replays what a live Run has printed so far before streaming the rest.
+- `plan.abandon` cleans up worktrees on a best-effort basis after its Events are recorded; a failure is logged, and B8's startup cleanup removes the leftovers.
+- Approval now records the first Phase as `starting` in State. Phases, Tasks and Runs are derived from the existing Events; `plan_id` is now filled for every Event about a Plan's Phases, Tasks or Runs. No Event shape changed.
+- `phaseEvents` now also returns the Phase's Task and Run Events, which carry only a Task or Run id.
+
+**Verification:** `pnpm check:b4` passes on Node 24.21.0: 201 Vitest tests (13 at S4, 7 new at S3 and 7 new at S6), the B2 exit scenario, and 11 S9 journeys against the built app. Code review is complete; its findings are fixed, two of them through ADR-0052 and ADR-0053.
 
 ## B5: Claude Code Adapter
 

@@ -9,8 +9,22 @@ import type {
   ProjectModels,
   SegnoConfig,
 } from "./config.js";
-import type { Event, PhaseStatus, PlanStatus } from "./events.js";
-import type { AwaitingItem, PlanState } from "./project.js";
+import type {
+  BlockReason,
+  Budget,
+  Event,
+  PhaseStatus,
+  PlanStatus,
+  RunKind,
+  RunOutcome,
+  TaskStatus,
+} from "./events.js";
+import type {
+  AwaitingItem,
+  PlanState,
+  RunState,
+  TaskState,
+} from "./project.js";
 
 /** A message port as both ends of the host protocol see it. */
 export interface HostPort {
@@ -99,7 +113,24 @@ export interface InspectResult {
   errors: ConfigError[];
 }
 
-/** The board at Plan and Phase level; later build phases add Task fields. */
+/** One card on the board [gui.md § Card]. */
+export interface BoardTask {
+  id: string;
+  title: string;
+  state: TaskStatus;
+  paused: boolean;
+  budgets: Record<Budget, number>;
+  blockReason?: BlockReason;
+  /** Why a queued Task isn't moving, e.g. `needs a` or `slots full`. */
+  waitReason?: string;
+  highRisk: boolean;
+  /** The Task's live Run. */
+  run?: { id: string; kind: RunKind; role: string };
+  /** Merging, but behind another Task in the merge queue. */
+  queuedToMerge?: true;
+}
+
+/** The active Plan's active or awaiting-merge Phase [api.md § Queries]. */
 export interface Board {
   plan: { id: string; slug: string; title: string; state: "active" } | null;
   phase: {
@@ -109,7 +140,16 @@ export interface Board {
     branch: string;
     prUrl?: string;
   } | null;
+  /** In scheduling order; superseded Tasks are never shown. */
+  tasks: BoardTask[];
+  /** Task ids in the merge queue, the one merging first. */
+  mergeQueue: string[];
+  /** Live agent Runs against concurrency, and agent sessions in this Phase. */
+  sessions: { live: number; concurrency: number; startedInPhase: number };
 }
+
+/** The `task` query: the full Task with its Runs. */
+export type TaskDetail = Omit<TaskState, "runIds"> & { runs: RunState[] };
 
 export interface PlanSummary {
   id: string;
@@ -152,6 +192,12 @@ export interface Queries {
   planExport: { params: { planId: string }; result: string };
   phases: { params: undefined; result: ArchivedPhase[] };
   phaseEvents: { params: { phaseId: string }; result: Event[] };
+  task: { params: { taskId: string }; result: TaskDetail };
+  /** The Task branch against its merge-base, or the diff kept at merge time. */
+  taskDiff: { params: { taskId: string }; result: { diff: string } };
+  run: { params: { runId: string }; result: RunState };
+  runTranscript: { params: { runId: string }; result: string };
+  runPrompt: { params: { runId: string }; result: string };
   config: { params: undefined; result: ConfigStatus };
   onboarding: {
     params: undefined;
@@ -166,6 +212,8 @@ export interface Queries {
 }
 export type QueryName = keyof Queries;
 const planParams = z.strictObject({ planId: z.string().min(1) });
+const taskParams = z.strictObject({ taskId: z.string().min(1) });
+const runParams = z.strictObject({ runId: z.string().min(1) });
 export const queryParamsSchemas = {
   board: z.undefined(),
   awaiting: z.undefined(),
@@ -174,12 +222,24 @@ export const queryParamsSchemas = {
   planExport: planParams,
   phases: z.undefined(),
   phaseEvents: z.strictObject({ phaseId: z.string().min(1) }),
+  task: taskParams,
+  taskDiff: taskParams,
+  run: runParams,
+  runTranscript: runParams,
+  runPrompt: runParams,
   config: z.undefined(),
   onboarding: z.undefined(),
 } satisfies Record<QueryName, z.ZodType>;
 
+/** One item of a Run's live output stream. */
+export type RunOutputItem =
+  | { kind: "output"; text: string }
+  | { kind: "end"; outcome: RunOutcome };
+
 /** Request and result types of every call. */
 export interface HostCalls {
+  /** A stream: acknowledged with null, then output items until `end`. */
+  runOutput: { args: [projectId: string, runId: string]; result: null };
   /** A stream: acknowledged with null, then one item per Event. */
   subscribe: { args: [projectId: string, since?: number]; result: null };
   command: {
@@ -221,6 +281,7 @@ export const callArgsSchemas = {
     z.tuple([projectId]),
     z.tuple([projectId, z.number().int().min(0)]),
   ]),
+  runOutput: z.tuple([projectId, z.string().min(1)]),
   command: z.tuple([projectId, z.unknown()]),
   query: z.union([
     z.tuple([projectId, z.string()]),
@@ -303,6 +364,33 @@ export function createHostClient(port: HostPort) {
         await (since === undefined
           ? call("subscribe", projectId)
           : call("subscribe", projectId, since));
+      } catch (error) {
+        streams.delete(id);
+        throw error;
+      }
+      return {
+        close() {
+          if (streams.delete(id)) port.postMessage({ id, cancel: true });
+        },
+      };
+    },
+    /**
+     * A Run's live output, then `end`; a finished Run's `end` at once. The
+     * stream closes after `end`.
+     */
+    async runOutput(
+      projectId: string,
+      runId: string,
+      onItem: (item: RunOutputItem) => void,
+    ) {
+      const id = nextId;
+      streams.set(id, (item) => {
+        const output = item as RunOutputItem;
+        if (output.kind === "end") streams.delete(id);
+        onItem(output);
+      });
+      try {
+        await call("runOutput", projectId, runId);
       } catch (error) {
         streams.delete(id);
         throw error;

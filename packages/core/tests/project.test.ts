@@ -48,6 +48,8 @@ test("a submitted Plan is pending approval with one Awaiting-you item", () => {
         phases: [{ id: "index", state: "pending" }],
       },
     ],
+    tasks: [],
+    runs: [],
     awaiting: [
       {
         id: 1,
@@ -60,7 +62,7 @@ test("a submitted Plan is pending approval with one Awaiting-you item", () => {
   });
 });
 
-test("approval clears Awaiting you while the first Phase stays pending in B2", () => {
+test("approval clears Awaiting you and the first Phase starts", () => {
   const state = project([
     submitted,
     {
@@ -72,7 +74,7 @@ test("approval clears Awaiting you while the first Phase stays pending in B2", (
     },
   ]);
   expect(state.plans[0]?.state).toBe("active");
-  expect(state.plans[0]?.phases).toEqual([{ id: "index", state: "pending" }]);
+  expect(state.plans[0]?.phases).toEqual([{ id: "index", state: "starting" }]);
   expect(state.awaiting).toEqual([]);
   expect(state.lastSeq).toBe(2);
 });

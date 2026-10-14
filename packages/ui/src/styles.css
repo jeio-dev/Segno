@@ -565,6 +565,265 @@ textarea.input {
   margin: 0;
 }
 
+/* ---------- columns and cards ---------- */
+
+.board {
+  position: relative;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(118px, 1fr));
+  gap: 8px;
+  align-items: start;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 160px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-col);
+  background: var(--bg);
+}
+
+.column[data-column="Blocked"] {
+  background: var(--blocked-bg);
+  border: 1.5px dashed var(--bad);
+}
+
+.column-heading {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.column-count {
+  font-family: var(--font-mono);
+}
+
+.card-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  min-height: var(--control-h);
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.card:hover {
+  border-color: var(--muted);
+}
+
+.card[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.card:focus-visible,
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.card-title {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.role {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--role);
+}
+
+.role[data-role="coder"] {
+  --role: var(--coder);
+}
+.role[data-role="tests"] {
+  --role: var(--tests);
+}
+.role[data-role="reviewer"] {
+  --role: var(--reviewer);
+}
+.role[data-role="you"] {
+  --role: var(--you);
+}
+
+.role-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--role);
+}
+
+.role[data-live="true"] .role-dot {
+  animation: pulse var(--pulse) ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
+.session-meter {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* ---------- card drawer ---------- */
+
+.drawer {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: min(620px, 100%);
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: -8px 0 24px color-mix(in srgb, var(--ink) 12%, transparent);
+  overflow: auto;
+}
+
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.drawer-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.drawer-title h2 {
+  font-size: 17px;
+}
+
+.drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px 24px;
+}
+
+.drawer-definition ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  min-height: var(--control-h);
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tab[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+.run-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.run {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.terminal,
+.diff {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--r-panel);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.terminal {
+  background: var(--term-bg);
+  color: var(--term-fg);
+}
+
+.terminal-dim {
+  color: var(--term-dim);
+}
+
+.diff {
+  background: var(--raised);
+  border: 1px solid var(--line);
+}
+
+.diff-line {
+  display: block;
+}
+
+.diff-add {
+  background: var(--diff-add);
+}
+
+.diff-del {
+  background: var(--diff-del);
+}
+
 /* ---------- motion ---------- */
 
 @media (prefers-reduced-motion: reduce) {
