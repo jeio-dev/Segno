@@ -1,4 +1,9 @@
-import type { HostClient, InspectResult, ProjectModels } from "@segno/core";
+import {
+  defaultProjectModels,
+  type HostClient,
+  type InspectResult,
+  type ProjectModels,
+} from "@segno/core";
 import { useState } from "react";
 import { errorMessage, formatConfigError } from "../format.js";
 import type { AppStore } from "../store.js";
@@ -88,7 +93,7 @@ function Proposal({
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [models, setModels] = useState<ProjectModels>(
-    result.models ?? { planner: "opus", coder: "sonnet", reviewer: "opus" },
+    result.models ?? defaultProjectModels,
   );
 
   async function add() {

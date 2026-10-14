@@ -89,6 +89,21 @@ export function openProjects(appData: string, log: HostLog, clock: Clock) {
       );
     let { config, local, errors } = await loadConfig(entry);
     let running: RunningProject | undefined;
+    async function discardPending() {
+      try {
+        await rm(join(projectDir(entry.id), "pending.json"), { force: true });
+      } catch (error) {
+        log.write(
+          "warn",
+          "Could not delete stale pending.json; the Project remains onboarded.",
+          {
+            projectId: entry.id,
+            error,
+          },
+        );
+      }
+    }
+
     if (
       existsSync(join(entry.path, "segno.config.json")) &&
       (!config || !local)
@@ -107,11 +122,7 @@ export function openProjects(appData: string, log: HostLog, clock: Clock) {
         clock,
         isOnboarded: () => Boolean(config),
         configStore: {
-          async discardPending() {
-            await rm(join(projectDir(entry.id), "pending.json"), {
-              force: true,
-            });
-          },
+          discardPending,
           async prepareOnboarding(value) {
             const candidate = withPendingModels(
               value,
@@ -123,14 +134,21 @@ export function openProjects(appData: string, log: HostLog, clock: Clock) {
               : { config: candidate as SegnoConfig, errors };
           },
           async writeOnboarding(value) {
-            await writeFile(
-              join(entry.path, "segno.config.json"),
-              `${JSON.stringify(value, null, 2)}\n`,
-              { flag: "wx" },
-            );
-            await rm(join(projectDir(entry.id), "pending.json"), {
-              force: true,
-            });
+            try {
+              await writeFile(
+                join(entry.path, "segno.config.json"),
+                `${JSON.stringify(value, null, 2)}\n`,
+                { flag: "wx" },
+              );
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "EEXIST")
+                throw error;
+              throw new HostError(
+                "bad-request",
+                "segno.config.json appeared during setup and was not overwritten. Restart Segno to load it.",
+              );
+            }
+            await discardPending();
           },
           async reload() {
             const loaded = await loadConfig(entry);

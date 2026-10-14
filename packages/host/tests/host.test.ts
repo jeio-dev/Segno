@@ -1281,3 +1281,54 @@ test("a replacement config records via file after a Project becomes not onboarde
     { seq: 2, type: "onboarding.confirmed", payload: { via: "file" } },
   ]);
 });
+
+test("manual setup reports a config that appeared without overwriting it", async () => {
+  const appData = tempDir();
+  const client = hostAt(appData);
+  const repo = repoWithRemote();
+  const { id } = await client.projects.add(repo, models);
+  const supplied = `${JSON.stringify(validConfig)}\n`;
+  writeFileSync(join(repo, "segno.config.json"), supplied);
+  await expect(
+    client.command(id, { type: "onboarding.confirm", config: validConfig }),
+  ).rejects.toMatchObject({
+    code: "bad-request",
+    message:
+      "segno.config.json appeared during setup and was not overwritten. Restart Segno to load it.",
+  });
+  expect(readFileSync(join(repo, "segno.config.json"), "utf8")).toBe(supplied);
+  expect(existsSync(join(appData, "projects", id, "pending.json"))).toBe(true);
+  const events: unknown[] = [];
+  await client.subscribe(id, 0, (event) => events.push(event));
+  await client.query(id, "board");
+  expect(events).toEqual([]);
+});
+
+test("failure to discard stale pending config warns and keeps an onboarded Project running", async () => {
+  const appData = tempDir();
+  let client = hostAt(appData);
+  const { id } = await addProject(client);
+  const pendingPath = join(appData, "projects", id, "pending.json");
+  // A directory at the file path makes real, non-recursive unlink fail on every platform.
+  mkdirSync(pendingPath);
+  client = hostAt(appData);
+  expect(await client.projects.list()).toMatchObject([
+    { id, status: "running" },
+  ]);
+  expect(
+    await client.command(id, { type: "plan.submit", yaml: twoPhase }),
+  ).toMatchObject({ ok: true });
+  expect(existsSync(pendingPath)).toBe(true);
+  const diagnostics = readFileSync(join(appData, "host.log"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(diagnostics).toContainEqual(
+    expect.objectContaining({
+      level: "warn",
+      projectId: id,
+      message:
+        "Could not delete stale pending.json; the Project remains onboarded.",
+    }),
+  );
+});

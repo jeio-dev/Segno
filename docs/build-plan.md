@@ -238,10 +238,10 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 **B3.1 implementation notes:**
 - Missing pending config is recreated with the Add defaults only when the Project is not onboarded [ADR-0050]. Existing pending config is validated.
 - `projects.add` still requires models when the repo has no config; an existing config ignores that argument. `projects.inspect` returns `source: models` and the default models, or `source: file` with its validation result. Detection is returned by the `onboarding` query.
-- An existing valid config records `onboarding.confirmed { via: file }` once on a new Project. Existing Plan history needs no retrospective confirmation. Manual confirmation keeps the Engine and its subscriptions alive.
+- An existing valid config records `onboarding.confirmed { via: file }` on a new Project. Confirmation is per transition into onboarded, not once per Project: if config disappears before any Plan and the Project becomes not onboarded again, restoring the file records another confirmation at startup. Ordinary restarts do not repeat confirmation. Existing Plan history needs no retrospective confirmation. Manual confirmation keeps the Engine and its subscriptions alive.
 - Model editing (`config.setModel`), file watching and pruning remain in B8. The onboarding Run and its start/stop Commands remain in B5.
 
-**Verification:** `pnpm check:b3.1` passes on Node 24.21.0: 172 Vitest tests (44 at S6), the B2 exit scenario, and 9 S9 journeys against the built app. Code review is complete. CI is configured to run `check:b3.1`; its result is pending a developer-authorized push and PR.
+**Verification:** `pnpm check:b3.1` passes on Node 24.21.0: 174 Vitest tests (46 at S6), the B2 exit scenario, and 9 S9 journeys against the built app. Code review is complete. CI is configured to run `check:b3.1`; its result is pending a developer-authorized push and PR.
 
 
 ## B4: Happy-path Task with a fake Adapter

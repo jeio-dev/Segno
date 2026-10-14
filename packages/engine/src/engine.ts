@@ -126,17 +126,18 @@ export function openEngine({
 
   async function processCommand(input: unknown): Promise<CommandResult> {
     const type = (input as { type?: unknown } | null)?.type;
+    const later = (laterCommandTypes as readonly unknown[]).includes(type);
     const recognized =
       commandSchema.options.some(
         (option) => option.shape.type.value === type,
-      ) || (laterCommandTypes as readonly unknown[]).includes(type);
+      ) || later;
     if (recognized && type !== "onboarding.confirm" && !isOnboarded())
       return {
         ok: false,
         code: "not-onboarded",
         message: "Set up the Project before submitting or managing Plans.",
       };
-    if ((laterCommandTypes as readonly unknown[]).includes(type)) {
+    if (later) {
       return {
         ok: false,
         code: "unsupported-in-version",
@@ -147,9 +148,7 @@ export function openEngine({
       typeof input !== "object" ||
       input === null ||
       !("type" in input) ||
-      !commandSchema.options.some(
-        (option) => option.shape.type.value === input.type,
-      )
+      !recognized
     ) {
       throw new BadRequestError();
     }
