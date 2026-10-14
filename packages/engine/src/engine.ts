@@ -260,9 +260,27 @@ export function openEngine({
     if (!drafts.length) return [];
     const first = log.lastSeq() + 1;
     const ts = clock.now().toISOString();
-    const events = drafts.map(
-      (draft, index) => ({ ...draft, seq: first + index, v: 1, ts }) as Event,
-    );
+    const events = drafts.map((draft, index): Event => {
+      const envelope = { seq: first + index, v: 1 as const, ts };
+      if (draft.type === "task.findingsClosed") {
+        const { byVerdictRunId, ...payload } = draft.payload;
+        const verdictIndex = drafts.findIndex(
+          (candidate) =>
+            candidate.type === "verdict.recorded" &&
+            candidate.payload.runId === byVerdictRunId,
+        );
+        if (verdictIndex < 0)
+          throw new Error(
+            `No Verdict in this batch for Run ${byVerdictRunId}.`,
+          );
+        return {
+          ...envelope,
+          type: draft.type,
+          payload: { ...payload, byVerdictSeq: first + verdictIndex },
+        };
+      }
+      return { ...draft, ...envelope } as Event;
+    });
     log.append(events, planId);
     for (const event of events) notify(event);
     return events.map(({ seq }) => seq);

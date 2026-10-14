@@ -2,6 +2,7 @@ import {
   chmodSync,
   existsSync,
   readFileSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -516,6 +517,14 @@ test("two rejects exhaust review budget; the next Coder and re-review receive bl
   expect(
     engine.readEvents().filter(({ type }) => type === "task.findingsClosed"),
   ).toHaveLength(1);
+  const events = engine.readEvents();
+  const closure = events.find(({ type }) => type === "task.findingsClosed");
+  const lastVerdict = events.findLast(
+    ({ type }) => type === "verdict.recorded",
+  );
+  expect(
+    closure?.type === "task.findingsClosed" && closure.payload.byVerdictSeq,
+  ).toBe(lastVerdict?.seq);
 });
 
 test("three crashes retry after 30 seconds and 2 minutes, then block immediately", async () => {
@@ -1021,10 +1030,16 @@ test("a merge timeout stops git and uses infra", async () => {
   });
   await heldPlan(engine);
   advancePhase(repo, { "other.txt": "Other work\n" });
+  const lock = git(
+    engine.state.tasks[0]?.worktree?.path ?? "",
+    "rev-parse",
+    "--git-path",
+    "index.lock",
+  );
   const hook = join(repo, ".git/hooks/pre-commit");
   writeFileSync(
     hook,
-    `#!/bin/sh\ntouch ${repo}/.git/merge-hook-ready\nsleep 3\n`,
+    `#!/bin/sh\ntouch ${lock}\ntouch ${repo}/.git/merge-hook-ready\nsleep 3\nrm -f ${lock}\n`,
   );
   chmodSync(hook, 0o755);
   await engine.handle({ type: "task.approve", taskId: "a" });
@@ -1052,6 +1067,7 @@ test("a merge timeout stops git and uses infra", async () => {
     test: 0,
     infra: 1,
   });
+  expect(existsSync(lock)).toBe(false);
   unlinkSync(hook);
   clock.advance(30_000);
   await engine.idle();
@@ -1353,4 +1369,126 @@ test("git failures while preparing an infra retry consume the remaining infra bu
     blockReason: "infra-limit",
     budgets: { review: 0, test: 0, infra: 3 },
   });
+});
+
+test("a failed launch preparation removes its newly created worktree so the next start can succeed", async () => {
+  const adapter = fakeAdapter();
+  const { engine, repo, projectDir, clock } = workEngine({
+    adapters: [adapter],
+  });
+  const runs = join(projectDir, "runs");
+  writeFileSync(runs, "Temporarily unavailable");
+  await approvedPlan(engine);
+  expect(engine.state.tasks[0]?.budgets.infra).toBe(1);
+  expect(adapter.runs).toHaveLength(0);
+  expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(
+    join(projectDir, "worktrees", "a"),
+  );
+  expect(git(repo, "branch", "--list", "segno/search-notes/index--a")).toBe("");
+  unlinkSync(runs);
+  clock.advance(30_000);
+  await engine.idle();
+  expect(engine.state.tasks[0]).toMatchObject({
+    state: "done",
+    budgets: { review: 0, test: 0, infra: 1 },
+  });
+});
+
+test.each(["crashed", "timeout"] as const)(
+  "a conflict-resolution Coder %s retry still receives the unresolved files",
+  async (outcome) => {
+    let coderRuns = 0;
+    const adapter = fakeAdapter({
+      coder: async (run) =>
+        ++coderRuns === 2
+          ? outcome === "crashed"
+            ? { kind: "crashed", detail: "Lost Coder" }
+            : runsUntilStopped()(run)
+          : writesFiles()(run),
+    });
+    const { engine, repo, clock } = workEngine({
+      adapters: [adapter],
+      config: {
+        roles: {
+          ...baseConfig.roles,
+          coder: { ...baseConfig.roles.coder, timeoutMin: 1 },
+        },
+      },
+    });
+    await heldPlan(engine);
+    advancePhase(repo, { "a.txt": "Concurrent edit\n" });
+    await engine.handle({ type: "task.approve", taskId: "a" });
+    if (outcome === "timeout") {
+      await expect
+        .poll(() => adapter.runs.filter(({ kind }) => kind === "coder").length)
+        .toBe(2);
+      clock.advance(60_000);
+    }
+    await engine.idle();
+    expect(engine.state.tasks[0]).toMatchObject({
+      state: "coding",
+      budgets: { infra: 1 },
+    });
+    clock.advance(30_000);
+    await engine.idle();
+    const coders = adapter.runs.filter(({ kind }) => kind === "coder");
+    expect(coders[1]?.prompt).toContain("## Conflicting files\n\na.txt");
+    expect(coders[2]?.prompt).toContain("## Conflicting files\n\na.txt");
+    expect(engine.state.tasks[0]?.state).toBe("held");
+  },
+);
+
+test("a sent-back Coder preparation failure consumes infra and respects backoff", async () => {
+  const adapter = fakeAdapter();
+  const { engine, projectDir, clock } = workEngine({ adapters: [adapter] });
+  await heldPlan(engine);
+  const runs = join(projectDir, "runs");
+  const saved = join(projectDir, "saved-runs");
+  renameSync(runs, saved);
+  writeFileSync(runs, "Temporarily unavailable");
+  await engine.handle({
+    type: "task.sendBack",
+    taskId: "a",
+    notes: "Check the permissions",
+  });
+  await engine.idle();
+  expect(engine.state.tasks[0]).toMatchObject({
+    state: "coding",
+    budgets: { review: 0, test: 0, infra: 1 },
+  });
+  clock.advance(29_999);
+  await engine.idle();
+  expect(engine.state.tasks[0]?.budgets.infra).toBe(1);
+  unlinkSync(runs);
+  renameSync(saved, runs);
+  clock.advance(1);
+  await engine.idle();
+  expect(engine.state.tasks[0]).toMatchObject({
+    state: "held",
+    budgets: { review: 0, test: 0, infra: 1 },
+  });
+  expect(adapter.runs.filter(({ kind }) => kind === "coder")).toHaveLength(2);
+});
+
+test("a failed merge preserves an index lock that existed before the Run", async () => {
+  const { engine, repo, clock } = workEngine();
+  await heldPlan(engine);
+  advancePhase(repo, { "other.txt": "Other work\n" });
+  const lock = git(
+    engine.state.tasks[0]?.worktree?.path ?? "",
+    "rev-parse",
+    "--git-path",
+    "index.lock",
+  );
+  writeFileSync(lock, "Another git operation owns this lock");
+  await engine.handle({ type: "task.approve", taskId: "a" });
+  await engine.idle();
+  expect(engine.state.tasks[0]?.budgets.infra).toBe(1);
+  expect(readFileSync(lock, "utf8")).toBe(
+    "Another git operation owns this lock",
+  );
+  unlinkSync(lock);
+  clock.advance(30_000);
+  await engine.idle();
+  expect(engine.state.tasks[0]?.state).toBe("done");
 });

@@ -350,6 +350,7 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 
 
 **B6 implementation notes:**
+- Follow-up verification of all ten PR #14 review comments is recorded in [the review dispositions](reviews/pr-14.md). Confirmed start, conflict-context, git-lock and Send back preparation failures are fixed in the PR follow-up; the full local `pnpm check:b6` passes for those fixes with 283 Vitest tests, the B2 exit scenario and 17 S9 journeys.
 - Infra retries wait 30 seconds after failure 1 and 2 minutes after failure 2. Failure 3 blocks immediately [ADR-0060]. Budgets are whole-life counts; a valid Verdict closes earlier Findings and records its own Findings and risk.
 - Every agent event resets the idle deadline. Agent timeouts await `stop()` before processing the outcome. Script and merge timeouts stop their process groups; scripts escalate when SIGTERM is ignored. Onboarding timeouts remove the scratch worktree and use no Task budget.
 - High-risk approvals enter `held`. Approve and Send back resolve the Awaiting-you item, and scheduling preserves the single slot even when several holds are resolved together.

@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
+import { resolve } from "node:path";
 
 /** A git operation that failed without a conflict: an infra failure [ADR-0029]. */
 export class GitError extends Error {
@@ -18,7 +20,27 @@ export function git(cwd: string, ...args: string[]): Promise<string> {
   return runGit(cwd, args);
 }
 
-function runGit(
+async function runGit(
+  cwd: string,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<string> {
+  // Only a cancellable write can leave a lock belonging to this Run. Never
+  // remove a lock that predated it, and wait until its process group exits.
+  const lock =
+    signal && ["merge", "commit", "add"].includes(args[0] ?? "")
+      ? resolve(cwd, await git(cwd, "rev-parse", "--git-path", "index.lock"))
+      : undefined;
+  const preexisting = lock !== undefined && existsSync(lock);
+  try {
+    return await executeGit(cwd, args, signal);
+  } finally {
+    if (signal?.aborted && lock && !preexisting)
+      await rm(lock, { force: true });
+  }
+}
+
+function executeGit(
   cwd: string,
   args: string[],
   signal?: AbortSignal,

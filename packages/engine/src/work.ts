@@ -8,6 +8,7 @@ import {
   type EffectiveConfig,
   type EventPayloads,
   type EventType,
+  type Finding,
   holdsSlot,
   type PhaseState,
   type PlanState,
@@ -48,8 +49,14 @@ import {
 } from "./live.js";
 import { runScript, type ScriptResult } from "./script.js";
 
+/** Unpersisted drafts; the emitter resolves Verdict references atomically. */
 export type Draft = {
-  [T in EventType]: { type: T; payload: EventPayloads[T] };
+  [T in EventType]: {
+    type: T;
+    payload: T extends "task.findingsClosed"
+      ? Omit<EventPayloads[T], "byVerdictSeq"> & { byVerdictRunId: string }
+      : EventPayloads[T];
+  };
 }[EventType];
 
 interface WorkDeps {
@@ -86,6 +93,7 @@ interface PreparedRun {
 
 /** The context every Task step works in. */
 interface Scope {
+  state: State;
   testFailure?: string;
   conflicts?: string[];
   plan: PlanState;
@@ -101,13 +109,55 @@ export function openWork(deps: WorkDeps) {
   const { repo, projectDir, readState, emit, internal, live } = deps;
 
   const timers = new Set<() => void>();
-  const startingRetries = new Set<string>();
+  const preparationRetries = new Set<string>();
 
-  function transition(task: TaskState, to: TaskStatus, cause: string): Draft {
+  function transition(
+    task: TaskState,
+    to: TaskStatus,
+    cause: string,
+    blockReason?: BlockReason,
+  ): Draft {
     return {
       type: "task.transitioned",
-      payload: { taskId: task.id, from: task.state, to, cause },
+      payload: {
+        taskId: task.id,
+        from: task.state,
+        to,
+        cause,
+        ...(blockReason ? { blockReason } : {}),
+      },
     };
+  }
+
+  function openBlocking(task: TaskState) {
+    return task.findings.filter(
+      (finding) => finding.open && finding.severity === "blocking",
+    );
+  }
+
+  function toFinding(
+    finding: Verdict["findings"][number],
+    runId: string,
+  ): Finding {
+    return {
+      severity: finding.severity,
+      body: finding.body,
+      ...(finding.file === undefined ? {} : { file: finding.file }),
+      ...(finding.line === undefined ? {} : { line: finding.line }),
+      id: randomUUID(),
+      source: "reviewer",
+      createdInRun: runId,
+    };
+  }
+
+  /** Setup and merge share the test timeout (runners.md § Timeouts). */
+  function deadline(expire: () => void) {
+    return deps.setTimer(
+      new Date(
+        deps.now().getTime() + (deps.config().tests.timeoutMin ?? 15) * 60_000,
+      ),
+      expire,
+    );
   }
 
   function runDir(runId: string) {
@@ -140,7 +190,7 @@ export function openWork(deps: WorkDeps) {
 
   /** The Run context for an agent Run, built from fixed ingredients [ADR-0024]. */
   async function contextFor(
-    { plan, phase, task }: Scope,
+    { state, plan, phase, task }: Scope,
     kind: "coder" | "docs" | "reviewer",
     cwd: string,
   ) {
@@ -157,9 +207,7 @@ export function openWork(deps: WorkDeps) {
           base,
           schema: verdictJsonSchema,
           risk: task.risk,
-          findings: task.findings.filter(
-            (finding) => finding.open && finding.severity === "blocking",
-          ),
+          findings: openBlocking(task),
           permissions,
         }),
         outputSchema: verdictJsonSchema,
@@ -172,15 +220,13 @@ export function openWork(deps: WorkDeps) {
           phase: definition,
           task: task.definition,
           testsCommand: config.tests.command,
-          findings: task.findings.filter(
-            (finding) => finding.open && finding.severity === "blocking",
-          ),
+          findings: openBlocking(task),
           permissions,
         }),
       };
     if (!phase.baseSha) throw new Error(`Phase ${phase.id} has no base.`);
-    const done = readState()
-      .tasks.filter(
+    const done = state.tasks
+      .filter(
         (other) =>
           other.planId === plan.id &&
           other.phaseId === phase.id &&
@@ -204,9 +250,7 @@ export function openWork(deps: WorkDeps) {
         base: phase.baseSha,
         baseBranch: config.baseBranch,
         changelog: config.docs.changelog,
-        findings: task.findings.filter(
-          (finding) => finding.open && finding.severity === "blocking",
-        ),
+        findings: openBlocking(task),
         permissions,
       }),
     };
@@ -230,7 +274,7 @@ export function openWork(deps: WorkDeps) {
     if (!worktree) throw new Error(`Task ${scope.task.id} has no worktree.`);
     const context = await contextFor(scope, kind, worktree.path);
     if (kind !== "reviewer") {
-      const tests = readState().runs.findLast(
+      const tests = scope.state.runs.findLast(
         (run) => scope.task.runIds.includes(run.id) && run.kind === "tests",
       );
       const failed =
@@ -247,8 +291,16 @@ export function openWork(deps: WorkDeps) {
         context.prompt += `\n## Failing test log\n\nFull log: ${path}\n\n${tail}\n`;
       }
     }
-    if (scope.conflicts?.length)
-      context.prompt += `\n## Conflicting files\n\n${scope.conflicts.join("\n")}\n`;
+    const conflicts =
+      scope.conflicts ??
+      (kind !== "reviewer" &&
+      scope.task.history.at(-1)?.cause === "merge-conflict"
+        ? (await git(worktree.path, "diff", "--name-only", "--diff-filter=U"))
+            .split("\n")
+            .filter(Boolean)
+        : []);
+    if (conflicts.length)
+      context.prompt += `\n## Conflicting files\n\n${conflicts.join("\n")}\n`;
     const resume = repair && adapter.capabilities.resume && repair.sessionId;
     const prompt = repair
       ? `${resume ? "" : context.prompt}${repairPrompt(repair.errors, permissionsFor(kind, config))}`
@@ -333,16 +385,10 @@ export function openWork(deps: WorkDeps) {
           onOutput: (text) => send(runId, { kind: "output", text }),
         });
         let timeout = false;
-        const cancel = deps.setTimer(
-          new Date(
-            deps.now().getTime() +
-              (deps.config().tests.timeoutMin ?? 15) * 60_000,
-          ),
-          () => {
-            timeout = true;
-            void script.stop();
-          },
-        );
+        const cancel = deadline(() => {
+          timeout = true;
+          void script.stop();
+        });
         live.set(runId, {
           stop: async () => {
             cancel();
@@ -375,16 +421,10 @@ export function openWork(deps: WorkDeps) {
       launch() {
         const controller = new AbortController();
         let timeout = false;
-        const cancel = deps.setTimer(
-          new Date(
-            deps.now().getTime() +
-              (deps.config().tests.timeoutMin ?? 15) * 60_000,
-          ),
-          () => {
-            timeout = true;
-            controller.abort();
-          },
-        );
+        const cancel = deadline(() => {
+          timeout = true;
+          controller.abort();
+        });
         let settled: Promise<unknown>;
         live.set(runId, {
           stop: async () => {
@@ -491,7 +531,13 @@ export function openWork(deps: WorkDeps) {
     const plan = state.plans.find(({ id }) => id === task?.planId);
     const phase = plan?.phases.find(({ id }) => id === task?.phaseId);
     if (!task || !plan || !phase?.branch) return undefined;
-    return { run, task, plan, phase: { ...phase, branch: phase.branch } };
+    return {
+      state,
+      run,
+      task,
+      plan,
+      phase: { ...phase, branch: phase.branch },
+    };
   }
 
   /** Ends the live stream once the Run's outcome is recorded. */
@@ -520,33 +566,25 @@ export function openWork(deps: WorkDeps) {
       payload: { taskId: task.id, budget: "infra", count },
     });
     if (count >= 3)
-      drafts.push({
-        type: "task.transitioned",
-        payload: {
-          taskId: task.id,
-          from: task.state,
-          to: "blocked",
-          cause: "infra-exhausted",
-          blockReason: reason,
-        },
-      });
+      drafts.push(transition(task, "blocked", "infra-exhausted", reason));
     commit(plan.id, drafts);
     if (count >= 3) return;
     const key = `${plan.id}/${task.id}`;
-    if (!run) startingRetries.add(key);
+    if (!run) preparationRetries.add(key);
     const cancel = deps.setTimer(
       new Date(deps.now().getTime() + (count === 1 ? 30_000 : 120_000)),
       () => {
         timers.delete(cancel);
-        startingRetries.delete(key);
+        preparationRetries.delete(key);
         internal(async () => {
-          const current = readState().tasks.find(
+          const state = readState();
+          const current = state.tasks.find(
             (other) => other.planId === plan.id && other.id === task.id,
           );
           if (!current || current.state !== task.state || current.paused)
             return;
-          if (!run) return; // drive() retries a ready Task once its timer is due.
-          const next = { ...scope, task: current };
+          if (!run) return; // drive() retries preparation once its timer is due.
+          const next = { ...scope, state, task: current };
           try {
             const prepared =
               run.kind === "tests" || run.kind === "setup"
@@ -680,24 +718,16 @@ export function openWork(deps: WorkDeps) {
           payload: {
             taskId: task.id,
             findingIds: open.map(({ id }) => id),
-            byVerdictSeq: readState().lastSeq + 2,
+            byVerdictRunId: runId,
           },
         });
-      for (const finding of verdict.findings)
+      const findings = verdict.findings.map((finding) =>
+        toFinding(finding, runId),
+      );
+      for (const finding of findings)
         drafts.push({
           type: "task.findingAdded",
-          payload: {
-            taskId: task.id,
-            finding: {
-              severity: finding.severity,
-              body: finding.body,
-              ...(finding.file === undefined ? {} : { file: finding.file }),
-              ...(finding.line === undefined ? {} : { line: finding.line }),
-              id: randomUUID(),
-              source: "reviewer",
-              createdInRun: runId,
-            },
-          },
+          payload: { taskId: task.id, finding },
         });
       if (verdict.decision === "reject") {
         const count = task.budgets.review + 1;
@@ -707,31 +737,14 @@ export function openWork(deps: WorkDeps) {
             payload: { taskId: task.id, budget: "review", count },
           },
           count >= 2
-            ? {
-                type: "task.transitioned",
-                payload: {
-                  taskId: task.id,
-                  from: task.state,
-                  to: "blocked",
-                  cause: "review-rejected",
-                  blockReason: "review-limit",
-                },
-              }
+            ? transition(task, "blocked", "review-rejected", "review-limit")
             : transition(task, "coding", "review-rejected"),
         );
         const next = {
           ...scope,
           task: {
             ...task,
-            findings: verdict.findings.map((finding) => ({
-              severity: finding.severity,
-              body: finding.body,
-              ...(finding.file === undefined ? {} : { file: finding.file }),
-              ...(finding.line === undefined ? {} : { line: finding.line }),
-              id: "",
-              source: "reviewer" as const,
-              open: true,
-            })),
+            findings: findings.map((finding) => ({ ...finding, open: true })),
           },
         };
         commit(
@@ -798,16 +811,7 @@ export function openWork(deps: WorkDeps) {
               payload: { taskId: task.id, budget: "test", count },
             },
             count >= 2
-              ? {
-                  type: "task.transitioned",
-                  payload: {
-                    taskId: task.id,
-                    from: task.state,
-                    to: "blocked",
-                    cause: "tests-failed",
-                    blockReason: "test-limit",
-                  },
-                }
+              ? transition(task, "blocked", "tests-failed", "test-limit")
               : transition(task, "coding", "tests-failed"),
           ],
           count >= 2
@@ -991,12 +995,18 @@ export function openWork(deps: WorkDeps) {
         ),
     );
     if (sentBack && !live.size && !activeStep && !merging) {
-      const scope = { plan, phase, task: sentBack };
-      commit(
-        plan.id,
-        [],
-        [await prepareAgentRun(scope, isDocs(scope) ? "docs" : "coder")],
-      );
+      const scope = { state, plan, phase, task: sentBack };
+      if (preparationRetries.has(`${plan.id}/${sentBack.id}`)) return false;
+      try {
+        commit(
+          plan.id,
+          [],
+          [await prepareAgentRun(scope, isDocs(scope) ? "docs" : "coder")],
+        );
+      } catch (error) {
+        infraFailure(scope, []);
+        deps.onError(error);
+      }
       return true;
     }
     // Only one Task is in the merge step at a time, in arrival order [ADR-0005].
@@ -1012,7 +1022,11 @@ export function openWork(deps: WorkDeps) {
           taskId === head.id && seq > (head.mergingSince ?? 0),
       )
     ) {
-      commit(plan.id, [], [prepareMergeRun({ plan, phase, task: head })]);
+      commit(
+        plan.id,
+        [],
+        [prepareMergeRun({ state, plan, phase, task: head })],
+      );
       return true;
     }
     if (tasks.some(({ state }) => holdsSlot(state))) return false;
@@ -1020,8 +1034,8 @@ export function openWork(deps: WorkDeps) {
       ({ state, paused }) => state === "ready" && !paused,
     );
     if (!next || !adapterFor("coder")) return false;
-    if (startingRetries.has(`${plan.id}/${next.id}`)) return false;
-    const scope = { plan, phase, task: next };
+    if (preparationRetries.has(`${plan.id}/${next.id}`)) return false;
+    const scope = { state, plan, phase, task: next };
     try {
       await startTask(scope);
     } catch (error) {
@@ -1042,22 +1056,32 @@ export function openWork(deps: WorkDeps) {
       ...scope,
       task: { ...task, worktree: { path, branch } },
     };
-    const setup = deps.config().setup;
-    commit(
-      plan.id,
-      [
-        {
-          type: "task.worktreeCreated",
-          payload: { taskId: task.id, path, branch },
-        },
-        transition(task, "coding", "slot-free"),
-      ],
-      [
-        setup
-          ? prepareScriptRun(started, "setup", setup.command)
-          : await prepareAgentRun(started, isDocs(started) ? "docs" : "coder"),
-      ],
-    );
+    try {
+      const setup = deps.config().setup;
+      commit(
+        plan.id,
+        [
+          {
+            type: "task.worktreeCreated",
+            payload: { taskId: task.id, path, branch },
+          },
+          transition(task, "coding", "slot-free"),
+        ],
+        [
+          setup
+            ? prepareScriptRun(started, "setup", setup.command)
+            : await prepareAgentRun(
+                started,
+                isDocs(started) ? "docs" : "coder",
+              ),
+        ],
+      );
+    } catch (error) {
+      // No Run has started. Roll back the worktree this start created so a
+      // retry can create it again and abandon cannot miss an unrecorded one.
+      await removeTaskWorktree(repo, { path, branch });
+      throw error;
+    }
   }
 
   /**

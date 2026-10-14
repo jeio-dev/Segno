@@ -4,6 +4,10 @@ All notable changes to Segno are documented here, following [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- Failed Task-start preparation cleans up its new worktree; infra retries retain unresolved conflict context, remove index locks left by canceled git writes, and back off after Send back preparation failures.
+
 ### Added
 
 - Failure paths with fixed review, test and infra budgets; blocking reasons and dependent wait reasons.
