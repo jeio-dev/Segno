@@ -23,7 +23,7 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 | B3 | Engine host, app shell and Projects | done | [#8](https://github.com/jeio-dev/Segno/pull/8) |
 | B3.1 | Adding a Project without a config | done | [#11](https://github.com/jeio-dev/Segno/pull/11) |
 | B4 | Happy-path Task with a fake Adapter | done | [#12](https://github.com/jeio-dev/Segno/pull/12) |
-| B5 | Claude Code Adapter | done | |
+| B5 | Claude Code Adapter | done | [#13](https://github.com/jeio-dev/Segno/pull/13) |
 | B6 | Failure paths | not started | |
 | B7 | Developer Task Commands | not started | |
 | B8 | Resilience, tray and notifications | not started | |
