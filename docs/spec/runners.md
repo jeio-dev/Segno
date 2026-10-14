@@ -9,13 +9,14 @@ This covers how Segno executes Runs: agent Runs through Adapters, and script Run
 | `coder` | Coder | Adapter | `prompt.md`, `transcript.jsonl` |
 | `docs` | Coder, with `docsModel` | Adapter | `prompt.md`, `transcript.jsonl` |
 | `reviewer` | Reviewer | Adapter | `prompt.md`, `transcript.jsonl`, `verdict.json` |
+| `onboarding` | Planner | Adapter | `prompt.md`, `transcript.jsonl`, `proposal.json` [ADR-0049] |
 | `planner` **(v1.2)** | Planner | Adapter | `prompt.md`, `transcript.jsonl` |
 | `tests` | Tests | shell | `output.log` |
 | `setup` | none (infrastructure) | shell | `output.log` |
 | `merge` | none (infrastructure) | git | `output.log` |
 | `probe` | none (rate-limit check) | Adapter | `transcript.jsonl` |
 
-Sources: [glossary] [ADR-0018] [ADR-0021] [ADR-0029] [ADR-0033] [ADR-0010].
+Sources: [glossary] [ADR-0018] [ADR-0021] [ADR-0029] [ADR-0033] [ADR-0010] [ADR-0049].
 
 ## Adapter interface
 
@@ -36,13 +37,13 @@ interface AgentAdapter {
 
 type RunSpec = {
   runId: string;
-  kind: "coder" | "docs" | "reviewer" | "planner" | "probe";
+  kind: "coder" | "docs" | "reviewer" | "onboarding" | "planner" | "probe";
   model: string;                 // passed through verbatim
-  cwd: string;                   // the Task's worktree (repo root for planner and probe)
+  cwd: string;                   // the Task's worktree (scratch worktree for onboarding; repo root for planner and probe)
   prompt: string;                // built by the Engine (see Run context)
   systemPrompt: string;          // built by the Engine
   permissions: PermissionProfile;
-  outputSchema?: JSONSchema;     // set for reviewer and planner
+  outputSchema?: JSONSchema;     // set for reviewer, onboarding and planner
   resumeSessionId?: string;
   env: Record<string, string>;   // includes the SEGNO_* variables
   transcriptPath: string;        // the Adapter tees raw CLI output here
@@ -112,6 +113,15 @@ type PermissionProfile = {
 
 Sources: [ADR-0004].
 
+**Onboarding profile.** The `onboarding` Run gets the broadest profile in Segno, used only on the developer's request and before any Plan exists [ADR-0049]:
+- `read: true`
+- `edit: true`, scratch worktree only
+- `shell: ["*"]`, every command except the always-denied ones below
+- `network: true`
+- `mcp: false`
+
+`roles.planner.allow` doesn't apply to it.
+
 **Always denied, for every Role, and not liftable by config** [ADR-0004]:
 
 ```
@@ -167,6 +177,30 @@ The Reviewer's structured output. It's passed as `outputSchema` and also request
 - Consistency rules and malformed handling are in [engine.md](engine.md#verdict-handling) [ADR-0016].
 - The Verdict is written to `verdict.json` exactly as received, and recorded in full in `verdict.recorded` [ADR-0033].
 
+## Onboarding proposal
+
+The `onboarding` Run's structured output [ADR-0049]:
+
+```json
+{
+  "kind": "proposal",
+  "config": { "tests": { "command": "string", "timeoutMin": 15 }, "setup": { "command": "string" }, "baseBranch": "string", "remote": "string", "coderAllow": ["string"] },
+  "reasons": { "<JSON pointer into config>": "string" },
+  "checks": [ { "command": "string", "purpose": "setup | tests | typecheck | build | lint", "exitCode": 0, "durationSec": 12, "failing": ["string"] } ],
+  "flags": ["no-checks", "fails-on-base"]
+}
+```
+
+or `{ "kind": "unable", "explanation": "string" }`.
+
+- **Optional fields.** `setup`, `remote`, `timeoutMin`, `coderAllow`, `flags` and `failing` are optional. Unknown keys are rejected.
+- **The check order.** The test command is the strongest check found, in this order: tests, then typecheck, then build, then lint. It's never a weaker check chosen because the stronger one fails.
+- **`no-checks`** means none was found, and `tests.command` is `"true"`.
+- **`fails-on-base`** means the chosen check exited non-zero on the base branch. `failing` names what failed.
+- **`timeoutMin`** is the suite's measured duration with headroom.
+- **`coderAllow`** becomes `roles.coder.allow`. It holds what the Coder needs to run the checks itself, and is validated like any `allow` entry.
+- **Who adds what.** The Engine adds the pending config's models and the ref the checks ran on. It validates the result as `segno.config.json`. Any failure records `onboarding.failed { reason: invalid-proposal }` ([engine.md](engine.md#onboarding)).
+
 ## Planner output schemas (v1.2)
 
 **Planning turn** [ADR-0010]:
@@ -209,7 +243,7 @@ Every Run, agent or script, gets these environment variables [ADR-0029]:
 | Variable | Value |
 |---|---|
 | `SEGNO` | `1` |
-| `SEGNO_TASK_ID` | the Task id (absent for planner and probe Runs) |
+| `SEGNO_TASK_ID` | the Task id (absent for onboarding, planner and probe Runs) |
 | `SEGNO_RUN_ID` | the Run id |
 | `SEGNO_SLOT` | `0 … concurrency-1`: the run slot the Task holds |
 
@@ -227,7 +261,7 @@ Isolation beyond `SEGNO_SLOT` (ports, databases) is the repo's responsibility [A
 |---|---|---|---|
 | `coder`, `docs` | 45 min | `roles.coder.timeoutMin` | `idleTimeoutMin` (10) |
 | `reviewer` | 15 min | `roles.reviewer.timeoutMin` | `idleTimeoutMin` (10) |
-| `planner` | 20 min | `roles.planner.timeoutMin` | `idleTimeoutMin` (10) |
+| `planner`, `onboarding` | 20 min | `roles.planner.timeoutMin` | `idleTimeoutMin` (10) |
 | `tests` | 15 min | `tests.timeoutMin` | none |
 | `setup`, `merge` | the same as `tests.timeoutMin` | none | none |
 
@@ -242,14 +276,15 @@ The Engine builds every prompt from fixed ingredients and writes it to `prompt.m
 
 | Run | Includes | Never includes |
 |---|---|---|
-| `coder` (first pass) | Plan title and summary (≤ 1 paragraph); Phase title; the Task's `title`, `description`, `acceptance` and `context` hints; the definition of done (meet every acceptance criterion; update docs for any behavior you change; keep tests passing; commit your work); `tests.command` | other Tasks' definitions, earlier transcripts, advisory Findings |
+| `coder` (first pass) | Plan title and summary (≤ 1 paragraph); Phase title; the Task's `title`, `description`, `acceptance` and `context` hints; the definition of done (meet every acceptance criterion; update docs for any behavior you change; run `tests.command` before you finish and fix what fails; commit your work); `tests.command` [ADR-0049] | other Tasks' definitions, earlier transcripts, advisory Findings |
 | `coder` (later passes) | all of the above, plus whichever applies: open blocking Findings (Reviewer and developer); the last 200 lines of the failing test log and its path; the conflicting files | same |
 | `reviewer` | the Task's `title`, `description`, `acceptance` and risk; the diff range `<merge-base>..HEAD`; the fact that tests passed; the previous Verdict's blocking Findings on a re-review; the Verdict schema; the instruction to check docs for changed behavior | Coder transcripts, other Tasks |
 | `docs` | Phase title and Plan summary; each `done` Task's title and final Verdict summary; advisory Findings from the Phase; the Phase diff range against `baseBranch`; the Phase `docs` block; `docs.changelog` | transcripts |
+| `onboarding` | the detected settings as a starting guess to verify; the check order and the rule never to weaken a failing suite; the instruction to run the setup command and the chosen check and report their exit codes and durations; the proposal schema | anything about Plans or Tasks |
 | `planner` **(v1.2)** | Planning session: the brief and the thread so far (through session resume), plus the Plan schema. Ask Planner: the Task definition, its Verdicts, the last 200 lines of its last test log, the Block reason and the fragment schema | Coder transcripts |
 | `probe` | a minimal fixed prompt, with no tools | anything else |
 
-Sources: [ADR-0024] [ADR-0010] [ADR-0021] [brief §Principles].
+Sources: [ADR-0024] [ADR-0010] [ADR-0021] [ADR-0049] [brief §Principles].
 
 - **Fresh sessions.** Every agent Run starts a new session, except an interruption resume [ADR-0020], a Verdict repair [ADR-0016], and later turns of a Planning session [ADR-0010].
 - **Built-in templates.** Prompt templates are built in. Overriding them is **(later)** [ADR-0030].

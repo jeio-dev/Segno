@@ -5,6 +5,7 @@ A Project's effective config is its committed file overlaid with its local setti
 | File | Committed | Holds |
 |---|---|---|
 | `segno.config.json` (repo root) | yes | repo and team settings [brief §User journey] |
+| `projects/<id>/pending.json` (app data directory) | no | the models chosen at Add, until the Project is onboarded [ADR-0049] |
 | `projects/<id>/local.json` (app data directory) | no | per-machine settings and per-Role model overrides for one Project [ADR-0025] [ADR-0038] |
 | `settings.json` (app data directory) | no | app settings [ADR-0038] [ADR-0041] |
 
@@ -39,7 +40,7 @@ A Project's effective config is its committed file overlaid with its local setti
 | `tests.command` | string | yes | none | non-empty, run through the shell | [brief §Decided] [ADR-0029] |
 | `tests.timeoutMin` | int | no | `15` | 1–1440 | [ADR-0019] |
 | `setup.command` | string | no | unset (no setup) | non-empty when present | [ADR-0029] |
-| `roles.<role>` | object | yes for `coder` and `reviewer`. `planner` is required from v1.2 | none | `<role>` ∈ `planner`, `coder`, `reviewer` | [glossary] [ADR-0030] |
+| `roles.<role>` | object | yes for `coder` and `reviewer`. `planner` is required from v1.2, and onboarding always writes it [ADR-0049] | none | `<role>` ∈ `planner`, `coder`, `reviewer` | [glossary] [ADR-0030] |
 | `roles.<role>.adapter` | string | yes | none | a known Adapter id that's installed (v1: `claude-code`) and has every capability the Role needs ([runners.md](runners.md#adapter-interface)) | [ADR-0017] |
 | `roles.<role>.model` | string | yes | none | non-empty, passed to the Adapter verbatim | [brief §How it works] [ADR-0017] |
 | `roles.coder.docsModel` | string | no | the Coder's `model` | the model for the Docs task | [ADR-0018] |
@@ -51,6 +52,20 @@ A Project's effective config is its committed file overlaid with its local setti
 | `retention.runDays` | int | no | `30` | ≥ 0, where `0` means never prune | [brief §Housekeeping] [ADR-0033] |
 
 The review (2), test (2) and infra (3) caps are **not** configurable, and there are no keys for them [ADR-0019].
+
+## Pending config
+
+`projects/<id>/pending.json` in the app data directory exists only while a Project is not onboarded. **Add** writes it, and `onboarding.confirmed` deletes it. It's written only through the app [ADR-0049].
+
+```jsonc
+{
+  "roles": { "planner": { "model": "opus" }, "coder": { "model": "sonnet", "docsModel": "haiku" }, "reviewer": { "model": "opus" } }
+}
+```
+
+- **Every key is required,** and each value is a non-empty string. Validation is the same as for the other files.
+- **Its models go into the config.** `onboarding.confirm` writes them into `segno.config.json` as `roles.<role>.model` and `roles.coder.docsModel`, with `adapter: "claude-code"`. They become the team's committed models.
+- **The onboarding Run** uses its Planner model, overridden by `local.json` as usual.
 
 ## Per-Project local settings
 
@@ -103,7 +118,7 @@ Only `roles.<role>.model` may override a committed key. Any other committed key 
 | `denied-permission` | an `allow` entry matches an always-denied operation or asks for a bypass mode [ADR-0004] |
 | `unknown-remote` | `remote` isn't a git remote of the repo |
 | `unknown-branch` | `baseBranch` isn't a branch on `remote`, checked against the local remote-tracking ref |
-| `missing-file` | an added Project's repo has no `segno.config.json` |
+| `missing-file` | an added Project's repo has no `segno.config.json` after a Plan has been submitted. Before that, the Project is not onboarded instead ([engine.md](engine.md#onboarding)) [ADR-0049] |
 | `adapter` | a Role's Adapter isn't installed or lacks a capability the Role needs |
 
 - **Invalid app settings** (`settings.json`) aren't reported per Project. The host logs them to `host.log` and uses the defaults [ADR-0047].

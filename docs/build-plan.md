@@ -21,6 +21,7 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 | B1 | Workspace and Plan file | done | [#6](https://github.com/jeio-dev/Segno/pull/6) |
 | B2 | Event log and reducer | done | [#7](https://github.com/jeio-dev/Segno/pull/7) |
 | B3 | Engine host, app shell and Projects | done | [#8](https://github.com/jeio-dev/Segno/pull/8) |
+| B3.1 | Adding a Project without a config | not started | |
 | B4 | Happy-path Task with a fake Adapter | not started | |
 | B5 | Claude Code Adapter | not started | |
 | B6 | Failure paths | not started | |
@@ -194,6 +195,46 @@ Every build phase's PR updates, as relevant:
 
 **Verification:** `pnpm check:b3` passes on Node 24.21.0: 164 Vitest tests, including 36 at S6; the B2 exit script; and 8 S9 journeys against the built app. CI runs it on Node 24 under xvfb. Local and cloud code reviews are complete, and their accepted findings are fixed.
 
+## B3.1: Adding a Project without a config
+
+A follow-up to B3, raised after using it: typing a test command before a Project could be added was too much friction [ADR-0049]. Branch `build/b3.1-not-onboarded`.
+
+**Implements:** [gui.md § Adding a Project](spec/gui.md#adding-a-project) and [§ Onboarding](spec/gui.md#onboarding) except the onboarding Run and `onboarding-review`; the `not-onboarded` status and the `projects.inspect` and `projects.add(path, models?)` changes in [api.md](spec/api.md#app-level-calls); the `config` query's `pending` and the `onboarding` query; [engine.md § Onboarding](spec/engine.md#onboarding) for `onboarding.confirm` (`via: manual`), `via: file` at Engine start, and the `not-onboarded` rejection; [config.md § Pending config](spec/config.md#pending-config); the `missing-file` rule. [ADR-0039] [ADR-0047] [ADR-0049].
+
+**Delivers:**
+- `host`:
+  - the models-only `projects.add`
+  - `pending.json`
+  - the `not-onboarded` status and the Project's Engine running in it
+- `engine`:
+  - `onboarding.confirm` writing `segno.config.json` from the form plus the pending models
+  - `onboarding.confirmed`
+  - the `not-onboarded` rejection
+- `ui`:
+  - the Add dialog with three model fields
+  - the not-onboarded board, showing only **Set up manually** until B5
+  - the B3 settings form, moved behind Set up manually and prefilled by the B3 detection
+- The B3 detection is unchanged, except that a blank test command now only disables the form's **Save**.
+
+**Seams:** S6, S9.
+
+**Exit check (`pnpm check:b3.1`):**
+- **S6:**
+  - `projects.add` with models on a repo with no config gives `not-onboarded`, with `pending.json` written and the repo untouched.
+  - `plan.submit` is rejected `not-onboarded`.
+  - `onboarding.confirm` with an invalid config is rejected `validation` and writes nothing.
+  - A valid one writes `segno.config.json` with the pending models, deletes `pending.json` and makes the Project `running`.
+  - A config placed in the repo before the Engine starts records `onboarding.confirmed { via: file }`.
+  - A Project whose config disappears after a Plan was submitted is `unavailable` with `missing-file`.
+- **S9:**
+  - Adding a temp repo with no config shows only the model fields. **Add** lands on the not-onboarded board.
+  - **Set up manually** shows the detected settings, and **Save** writes `segno.config.json` without committing it, so the commit hint shows.
+  - The B3 S9 journeys still pass, with the add journey going through Set up manually.
+
+**Interim state:** **Onboard project** isn't shown until B5, so `onboarding.start` and `onboarding.stop` stay `bad-request`.
+
+**Docs:** the README's "adding a Project" says how to add a Project and set it up by hand.
+
 ## B4: Happy-path Task with a fake Adapter
 
 **Implements:** [engine.md § Phase lifecycle](spec/engine.md#phase-lifecycle) rows `pending` → `starting` → `active` (fetch, Phase branch cut, Docs task added, deferred start on fetch failure); [§ Automatic transitions](spec/engine.md#automatic-transitions) success rows from `waiting` to `done`; the merge queue and the skipped re-test; [§ Scheduling](spec/engine.md#automatic-transitions); `plan.abandon` effects on worktrees and Task branches. [store.md § Worktrees](spec/store.md#worktrees), [§ Branches](spec/store.md#branches), `runs/` and `tasks/<id>/merged.diff`. [runners.md § Run kinds](spec/runners.md#run-kinds) (`tests`, `setup`, `merge`), [§ Adapter interface](spec/runners.md#adapter-interface) (types only), [§ Script Runs](spec/runners.md#script-runs), [§ Run environment](spec/runners.md#run-environment), [§ Commits](spec/runners.md#commits), [§ Transcripts and live output](spec/runners.md#transcripts-and-live-output). [api.md](spec/api.md) the `task`, `taskDiff`, `run`, `runTranscript` and `runPrompt` queries and [§ Live Run output](spec/api.md#live-run-output). [gui.md](spec/gui.md) § Board columns and cards (happy-path states), the session meter, and § Card drawer (Diff, Tests and Transcript tabs). [ADR-0001] [ADR-0003] [ADR-0005] [ADR-0009] [ADR-0011] [ADR-0014] [ADR-0017] [ADR-0018] [ADR-0028] [ADR-0029] [ADR-0033] [ADR-0038].
@@ -219,18 +260,25 @@ Every build phase's PR updates, as relevant:
 
 ## B5: Claude Code Adapter
 
-**Implements:** [runners.md § Claude Code Adapter (v1)](spec/runners.md#claude-code-adapter-v1), [§ Permission profiles](spec/runners.md#permission-profiles), [§ Run context](spec/runners.md#run-context) (first-pass Coder, Reviewer and Docs prompts, `probe`), [§ Verdict schema](spec/runners.md#verdict-schema), [§ Adapter interface](spec/runners.md#adapter-interface) capability gating; [config.md § Validation](spec/config.md#validation) Adapter checks, shown in the add-project flow; usage reporting in the `board` query and the board's subscription usage control. [ADR-0004] [ADR-0016] (schema only) [ADR-0017] [ADR-0018] [ADR-0021] (classification only) [ADR-0024] [ADR-0030].
+**Implements:** [runners.md § Claude Code Adapter (v1)](spec/runners.md#claude-code-adapter-v1), [§ Permission profiles](spec/runners.md#permission-profiles), [§ Run context](spec/runners.md#run-context) (first-pass Coder, Reviewer and Docs prompts, `probe`), [§ Verdict schema](spec/runners.md#verdict-schema), [§ Adapter interface](spec/runners.md#adapter-interface) capability gating; [config.md § Validation](spec/config.md#validation) Adapter checks, shown in the add-project flow; onboarding: [engine.md § Onboarding](spec/engine.md#onboarding) in full, [runners.md](spec/runners.md) the `onboarding` Run kind, its profile, context and [§ Onboarding proposal](spec/runners.md#onboarding-proposal), and the Coder's self-test line, plus [gui.md § Onboarding](spec/gui.md#onboarding) and `onboarding-review`; usage reporting in the `board` query and the board's subscription usage control. [ADR-0004] [ADR-0016] (schema only) [ADR-0017] [ADR-0018] [ADR-0021] (classification only) [ADR-0024] [ADR-0030] [ADR-0049].
 
 **Delivers:**
 - `adapter-claude-code`: `detect()`, the flag mapping re-checked against the installed Claude Code (2.1.296 at planning time), stream parsing, classification, `stop()`.
 - Recorded fixtures for every classification, and `pnpm test:live` to re-record them.
 - Built-in prompt templates, including the Docs task's, and `prompt.md` written before every agent Run.
 - The app wires the real Adapter into `startHost`.
+- Onboarding: the Engine's onboarding Run, Events and scratch worktree; the onboarding prompt and proposal schema; **Onboard project**, the live output, **Stop onboarding**, **Retry onboarding** and the `onboarding-review` item with Confirm and Edit.
 
-**Seams:** S5, plus live.
+**Seams:** S5, S6, S9, plus live.
 
 **Exit check (`pnpm check:b5`):** Replayed fixtures classify `completed`, `failed`, `crashed` and `rate-limited` (with and without `resetAt`) correctly, and the replay stub's argv matches the runners.md flag table.
-**Live (`pnpm check:b5:live`, developer-triggered, uses the developer's Claude subscription):** in a throwaway repo added as a Project, a one-Task Plan reaches `done` with the real `claude`. `prompt.md` contains exactly the Run-context ingredients. Fixtures are re-recorded against the installed version.
+- **S6, onboarding with the fake Adapter:**
+  - A valid proposal → `onboarding-review` → `onboarding.confirm` writes the config.
+  - `unable` and `invalid-proposal` record `onboarding.failed`.
+  - `onboarding.stop` records `onboarding.stopped`.
+  - Every outcome removes the scratch worktree, and none uses a budget.
+- **S9:** Onboard project with the fake Adapter shows the review with its flags, and Confirm makes the Project `running`.
+**Live (`pnpm check:b5:live`, developer-triggered, uses the developer's Claude subscription):** in a throwaway repo added as a Project, a one-Task Plan reaches `done` with the real `claude`. `prompt.md` contains exactly the Run-context ingredients. In a second throwaway repo with a passing `test` script, **Onboard project** proposes that script with its exit code and duration, and Confirm writes it. Fixtures are re-recorded against the installed version.
 
 **Note:** if the installed Claude Code's flags differ from runners.md, the difference is raised and recorded as an ADR before the mapping changes.
 

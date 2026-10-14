@@ -1,3 +1,7 @@
+---
+status: accepted, amended by ADR-0049
+---
+
 # Config errors, Project availability and config status have fixed shapes
 
 The spec required every config error to be listed (in the add-project flow, for an `unavailable` Project and in `config.rejected`) without saying what an error is, said only that an `unavailable` Project has "a `reason`", and gave the `config` query no place for the commit hint of ADR-0039. A config error is `{ file, path, line?, column?, code, message }`, modeled on the Plan file's validation error but with its own codes: `json-syntax`, `schema-version`, `schema`, `denied-permission`, `unknown-remote`, `unknown-branch`, `missing-file`, and `adapter` (reserved for the Adapter checks). Line and column come from the JSON source when one is available. An `unavailable` Project reports the first failing check, in this order: `missing-folder`, `not-a-repo`, `invalid-config` (with every error) and `unreadable-log` (an Event log that can't be replayed, such as one with an unknown Event type), plus a human-readable `message`, so one bad Project never stops the host. The `config` query returns `{ effective, sources, rejected, committed }`, where `committed` says whether `segno.config.json` is on `<remote>/<baseBranch>` and drives the commit hint. The `remote` and `baseBranch` checks and `committed` all read local refs, so a Project never becomes unavailable just because the app starts offline. App settings belong to no Project, so an invalid `settings.json` is logged to `host.log` and replaced by the defaults rather than reported.
