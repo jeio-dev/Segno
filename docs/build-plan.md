@@ -23,7 +23,7 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 | B3 | Engine host, app shell and Projects | done | [#8](https://github.com/jeio-dev/Segno/pull/8) |
 | B3.1 | Adding a Project without a config | done | [#11](https://github.com/jeio-dev/Segno/pull/11) |
 | B4 | Happy-path Task with a fake Adapter | done | [#12](https://github.com/jeio-dev/Segno/pull/12) |
-| B5 | Claude Code Adapter | not started | |
+| B5 | Claude Code Adapter | done | |
 | B6 | Failure paths | not started | |
 | B7 | Developer Task Commands | not started | |
 | B8 | Resilience, tray and notifications | not started | |
@@ -303,6 +303,24 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 **Live (`pnpm check:b5:live`, developer-triggered, uses the developer's Claude subscription):** in a throwaway repo added as a Project, a one-Task Plan reaches `done` with the real `claude`. `prompt.md` contains exactly the Run-context ingredients. In a second throwaway repo with a passing `test` script, **Onboard project** proposes that script with its exit code and duration, and Confirm writes it. Fixtures are re-recorded against the installed version.
 
 **Note:** if the installed Claude Code's flags differ from runners.md, the difference is raised and recorded as an ADR before the mapping changes.
+
+**B5 implementation notes:**
+- Claude Code 2.1.299 has every flag in the runners.md table. The fixtures were recorded with it, and `detect()` reports `usage` from 2.1.299 on. Usage comes from the stream's `rate_limit_event`: the window the CLI names as binding, else the fullest, as a percentage with `limit: 100`. A rejected status (unless the CLI carries on with overage), or a synthetic `rate_limit` error message, makes the Run `rate-limited`, unless the Run still completed without error.
+- The rate-limited fixtures are derived from the failed recording, since a usage limit can't be hit on demand (`tests/fixtures/README.md`). `pnpm test:live` re-records every fixture through the Adapter's transcript tee.
+- Every agent Run's `systemPrompt` is empty, so `prompt.md` holds the whole context. The Reviewer gets the Verdict schema as its `outputSchema`, and the diff range is the merge-base with the Phase branch. Only a Verdict that matches the schema is recorded; until B6 repairs malformed ones, the Task stays in `reviewing`. The Docs task's range starts at the Phase's base commit.
+- A probe Run has no tools: the Adapter passes `--tools ""` for `kind: probe` [ADR-0054].
+- The always-denied git operations are prefix rules in Claude Code, so under the onboarding profile's unrestricted shell they're best effort [ADR-0055]. B5 adds the probe's context (`probeSpec`); B8 starts probe Runs.
+- The CLI enforces one object schema, so the onboarding output schema it gets puts both kinds in one object. The Engine then validates against the strict `proposal | unable` union.
+- `onboarding.proposed` records the proposal as a whole `segno.config.json`: the agent's values, the pending models, `coderAllow` as `roles.coder.allow`, the reasons' pointers moved to match, and the `ref` and `sha` the checks ran on. **Confirm** sends `proposal.config`, and **Edit** prefills the manual form with it.
+- An onboarding Run that ends `failed` is recorded with its own outcome, and `onboarding.failed { reason: crashed }` with the CLI's message. A rate-limited one records only `run.finished { rate-limited }` and returns onboarding to `idle`, until B8 pauses and reruns it. Timeouts and `hung` are B6.
+- **Stop onboarding** also ends an onboarding Run left without an outcome by a restart. A scratch worktree left behind is removed when the next onboarding starts.
+- `onboarding.start` is rejected `invalid-transition` while a proposal awaits review, so the `onboarding-review` item is resolved only by `onboarding.confirm` or a config that appears by itself.
+- A Role whose Adapter isn't installed or lacks a capability is an `adapter` config error at `/roles/<role>/adapter`, both in `projects.inspect` and at Engine start.
+- Subscription usage is held in memory by the host, app-wide per Adapter, and returned by the `board` query. The window reads it from there, because it derives the rest of the board from Events.
+- No existing Event's shape changed. `onboarding.started`, `onboarding.proposed`, `onboarding.failed` and `onboarding.stopped` are new Event types. State gains `onboarding`, and Awaiting-you items gain the `onboarding-review` kind with a `runId`.
+- The replay stub now installs its SIGTERM handler before printing, and `expect.poll` waits up to 10 s, since whole Task flows on real git can take longer than the 1 s default under a full parallel run.
+
+**Verification:** `pnpm check:b5` passes on Node 24.21.0: 235 Vitest tests (20 at S5, 14 new at S6), the B2 exit scenario, and 14 S9 journeys against the built app (3 new). Code review is complete, and its findings are fixed, recorded as ADR-0055, or deferred: a claude process that outlives a crashed host is B8's restart recovery. The live check, `pnpm check:b5:live`, is the developer's to run.
 
 ## B6: Failure paths
 

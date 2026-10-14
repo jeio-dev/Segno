@@ -1,6 +1,6 @@
 import { agentRunKinds as agentKinds } from "./events.js";
 import { holdsSlot, type State } from "./project.js";
-import type { Board, BoardTask } from "./protocol.js";
+import type { Board, BoardTask, Usage } from "./protocol.js";
 
 /**
  * The board of the active Plan's active or awaiting-merge Phase, derived from
@@ -8,8 +8,9 @@ import type { Board, BoardTask } from "./protocol.js";
  */
 export function boardOf(
   state: State,
-  { concurrency }: { concurrency: number },
+  { concurrency, usage }: { concurrency: number; usage?: Usage | undefined },
 ): Board {
+  const usageOf = usage ? { usage } : {};
   const plan = state.plans.find(({ state }) => state === "active");
   const phase = plan?.phases.find(
     ({ state }) => state === "active" || state === "awaiting-merge",
@@ -24,6 +25,7 @@ export function boardOf(
       tasks: [],
       mergeQueue: [],
       sessions: { live: liveAgentRuns, concurrency, startedInPhase: 0 },
+      ...usageOf,
     };
   const definition = plan.definition.phases.find(({ id }) => id === phase.id);
   const tasks = state.tasks
@@ -76,6 +78,7 @@ export function boardOf(
           agentKinds.includes(kind) && taskId !== undefined && ids.has(taskId),
       ).length,
     },
+    ...usageOf,
   };
 
   function waitReasonOf(taskId: string) {

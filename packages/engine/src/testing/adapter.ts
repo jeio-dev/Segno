@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type {
@@ -17,6 +17,8 @@ export interface FakeRun {
   spec: RunSpec;
   /** Emits an `output` RunEvent and tees it to the transcript. */
   output(text: string): Promise<void>;
+  /** Emits any RunEvent, such as `usage`, and tees it to the transcript. */
+  event(event: RunEvent): void;
   /** Resolves once the Engine has called `stop()`. */
   stopped: Promise<void>;
 }
@@ -54,6 +56,62 @@ export function approves(): FakeScript {
   };
 }
 
+/** An agent that answers with `structured` as its output, as the CLI gave it. */
+export function proposes(
+  structured: unknown | ((spec: RunSpec) => unknown),
+): FakeScript {
+  return async (run) => {
+    await run.output("Running the checks.\n");
+    return {
+      ...completed(run.spec),
+      structured:
+        typeof structured === "function" ? structured(run.spec) : structured,
+    };
+  };
+}
+
+/**
+ * An onboarding agent that proposes `npm test` when the scratch worktree's
+ * package.json has a test script, and the no-checks placeholder otherwise.
+ */
+export function proposesFromRepo(): FakeScript {
+  return async (run) => {
+    await run.output("Looking for the repo's checks.\n");
+    let scripts: Record<string, unknown> = {};
+    try {
+      scripts =
+        JSON.parse(readFileSync(join(run.spec.cwd, "package.json"), "utf8"))
+          .scripts ?? {};
+    } catch {}
+    const tests = typeof scripts.test === "string";
+    await run.output(tests ? "Running npm test.\n" : "No checks found.\n");
+    return proposes({
+      kind: "proposal",
+      config: {
+        tests: { command: tests ? "npm test" : "true", timeoutMin: 5 },
+        baseBranch: "main",
+        ...(tests ? { coderAllow: ["Bash(npm *)"] } : {}),
+      },
+      reasons: {
+        "/tests/command": tests
+          ? "package.json defines a test script."
+          : "The repo has no tests, typecheck, build or lint.",
+      },
+      checks: tests
+        ? [
+            {
+              command: "npm test",
+              purpose: "tests",
+              exitCode: 0,
+              durationSec: 2,
+            },
+          ]
+        : [],
+      ...(tests ? {} : { flags: ["no-checks"] }),
+    })(run);
+  };
+}
+
 /** A Run that keeps going until the Engine stops it. */
 export function runsUntilStopped(): FakeScript {
   return async (run) => {
@@ -73,7 +131,11 @@ function completed(spec: RunSpec): RunResult {
  */
 export function fakeAdapter(
   scripts: Partial<Record<RunSpec["kind"], FakeScript>> = {},
-  { id = "claude-code", paceMs = 0 }: { id?: AdapterId; paceMs?: number } = {},
+  {
+    id = "claude-code",
+    paceMs = 0,
+    usage = false,
+  }: { id?: AdapterId; paceMs?: number; usage?: boolean } = {},
 ) {
   const runs: RunSpec[] = [];
   const defaults: Partial<Record<RunSpec["kind"], FakeScript>> = {
@@ -87,7 +149,7 @@ export function fakeAdapter(
       resume: true,
       structuredOutput: true,
       toolAllowlist: true,
-      usage: false,
+      usage,
     },
     async detect() {
       return { installed: true, version: "fake" };
@@ -118,6 +180,7 @@ export function fakeAdapter(
             if (paceMs) await sleep(paceMs);
             emit({ type: "output", text });
           },
+          event: emit,
         });
       })().finally(() => events.end());
       return {

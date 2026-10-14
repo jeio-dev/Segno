@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@segno/adapter-claude-code": "workspace:*",
     "@segno/core": "workspace:*",
     "@segno/engine": "workspace:*",
     "@segno/host": "workspace:*",

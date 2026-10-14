@@ -871,3 +871,24 @@ textarea.input {
 .models th {
   font-weight: 500;
 }
+
+/* ---------- onboarding review ---------- */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table th,
+.table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.table th {
+  font-weight: 500;
+  white-space: nowrap;
+}

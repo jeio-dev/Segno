@@ -69,7 +69,17 @@ export type {
 } from "./events.js";
 export { agentRunKinds, eventVersions, scriptRunKinds } from "./events.js";
 export type {
+  OnboardingFailureReason,
+  OnboardingOutput,
+  OnboardingProposal,
+} from "./onboarding.js";
+export {
+  onboardingOutputJsonSchema,
+  onboardingOutputSchema,
+} from "./onboarding.js";
+export type {
   AwaitingItem,
+  OnboardingState,
   PhaseState,
   PlanState,
   RunState,
@@ -98,6 +108,7 @@ export type {
   RunOutputItem,
   SettingsChanges,
   TaskDetail,
+  Usage,
 } from "./protocol.js";
 export {
   callArgsSchemas,
@@ -109,3 +120,4 @@ export {
   requestSchema,
   responseSchema,
 } from "./protocol.js";
+export { verdictJsonSchema, verdictSchema } from "./verdict.js";

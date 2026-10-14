@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0040
+status: accepted, amended by ADR-0040 and ADR-0054
 ---
 
 # A rate limit pauses every agent Run of that Adapter until the reset time

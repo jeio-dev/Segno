@@ -1,0 +1,25 @@
+{
+  "recordedWith": "2.1.299",
+  "fixtures": {
+    "completed": {
+      "exit": 0
+    },
+    "completed-structured": {
+      "exit": 0
+    },
+    "failed": {
+      "exit": 1
+    },
+    "crashed": {
+      "signal": "SIGKILL"
+    },
+    "rate-limited": {
+      "exit": 1,
+      "derivedFrom": "failed"
+    },
+    "rate-limited-no-reset": {
+      "exit": 1,
+      "derivedFrom": "failed"
+    }
+  }
+}

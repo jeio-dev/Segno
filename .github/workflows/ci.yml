@@ -19,4 +19,4 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: sudo apt-get update && sudo apt-get install -y xvfb libasound2t64
       # S9 drives the built app, so it needs a display.
-      - run: xvfb-run --auto-servernum pnpm check:b4
+      - run: xvfb-run --auto-servernum pnpm check:b5

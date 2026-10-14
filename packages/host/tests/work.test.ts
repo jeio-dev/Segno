@@ -337,3 +337,70 @@ test("runOutput replays what a live Run printed before the stream opened", async
     { kind: "end", outcome: "completed" },
   ]);
 });
+
+test("the board reports subscription usage only as the Adapter reports it, across Projects", async () => {
+  const usage = {
+    type: "usage",
+    used: 42,
+    limit: 100,
+    resetAt: "2026-10-14T17:00:00.000Z",
+  } as const;
+  const reporting = (capable: boolean) =>
+    fakeAdapter(
+      {
+        coder: async (run) => {
+          run.event(usage);
+          return writesFiles()(run);
+        },
+      },
+      { usage: capable },
+    );
+
+  const capable = hostWith([reporting(true)]);
+  const { repo } = repos.repoWithRemote({
+    "segno.config.json": `${JSON.stringify(config)}\n`,
+  });
+  const { id: idle } = await capable.projects.add(repo);
+  expect((await capable.query(idle, "board")).usage).toBeUndefined();
+  const { id } = await approvedProject(capable);
+  await expect
+    .poll(async () => (await capable.query(id, "board")).usage)
+    .toEqual({ used: 42, limit: 100, resetAt: "2026-10-14T17:00:00.000Z" });
+  // Usage belongs to the subscription, so every Project's board shows it.
+  expect((await capable.query(idle, "board")).usage).toEqual({
+    used: 42,
+    limit: 100,
+    resetAt: "2026-10-14T17:00:00.000Z",
+  });
+
+  // Without the capability, only the last known reset time is shown.
+  const other = hostWith([reporting(false)]);
+  const project = await approvedProject(other);
+  await expect
+    .poll(async () => (await other.query(project.id, "board")).usage)
+    .toEqual({ resetAt: "2026-10-14T17:00:00.000Z" });
+});
+
+test("a Verdict that doesn't match the Verdict schema is not recorded and the Task stays in review", async () => {
+  const adapter = fakeAdapter({
+    reviewer: async (run) => ({
+      kind: "completed",
+      sessionId: run.spec.runId,
+      finalText: "Done.",
+      structured: { decision: "approve", summary: "Looks fine." },
+    }),
+  });
+  const client = hostWith([adapter]);
+  const { id } = await approvedProject(client);
+  await expect
+    .poll(async () => {
+      const task = await client.query(id, "task", { taskId: "a" });
+      return task.runs.find(({ kind }) => kind === "reviewer")?.outcome;
+    })
+    .toBe("completed");
+  // Malformed Verdicts are repaired in B6; until then the Task waits.
+  expect(await client.query(id, "task", { taskId: "a" })).toMatchObject({
+    state: "reviewing",
+    verdicts: [],
+  });
+});

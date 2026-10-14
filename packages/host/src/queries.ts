@@ -15,6 +15,7 @@ import { exportPlan } from "@segno/plan-format";
 import { detectConfig } from "./detect.js";
 import { git } from "./git.js";
 import type { RunningProject } from "./projects.js";
+import type { UsageStore } from "./usage.js";
 
 type Results = { [Q in QueryName]: Queries[Q]["result"] };
 
@@ -23,6 +24,7 @@ export async function runQuery(
   { engine, path, dir, config, local, pending }: RunningProject,
   name: string,
   params: unknown,
+  usage: UsageStore,
 ): Promise<Results[QueryName]> {
   if (!Object.hasOwn(queryParamsSchemas, name))
     throw new HostError("bad-request", `Unknown query ${name}.`);
@@ -57,6 +59,7 @@ export async function runQuery(
     case "board":
       return boardOf(state, {
         concurrency: config?.concurrency ?? 1,
+        usage: usage.of(config?.roles.coder.adapter ?? "claude-code"),
       }) satisfies Results["board"];
     case "task": {
       const { runIds, ...task } = findTask(
@@ -156,7 +159,8 @@ export async function runQuery(
     }
     case "onboarding":
       return {
-        state: config ? "done" : "idle",
+        // A repo added with its own config was never onboarded through Segno.
+        ...(config ? { state: "done" as const } : state.onboarding),
         detected: await detectConfig(path),
       };
     case "config": {

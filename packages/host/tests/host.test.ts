@@ -13,7 +13,12 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { MessageChannel } from "node:worker_threads";
-import { createHostClient, type HostClient } from "@segno/core";
+import {
+  type AgentAdapter,
+  createHostClient,
+  type HostClient,
+} from "@segno/core";
+import { fakeAdapter, runsUntilStopped } from "@segno/engine/testing";
 import Database from "better-sqlite3";
 import { afterEach, expect, test } from "vitest";
 import { nodePort, startHost } from "../src/index.js";
@@ -62,11 +67,22 @@ function repoWithRemote(files: Record<string, string> = {}) {
   return realpathSync(repo);
 }
 
+/** An installed claude-code Adapter whose agent Runs wait to be stopped. */
+function idleAdapter() {
+  return fakeAdapter({
+    coder: runsUntilStopped(),
+    docs: runsUntilStopped(),
+  });
+}
+
 function hostAt(
   appData = tempDir(),
-  { ghBinary = join(appData, "no-such-gh") } = {},
+  {
+    ghBinary = join(appData, "no-such-gh"),
+    adapters = [idleAdapter()],
+  }: { ghBinary?: string; adapters?: AgentAdapter[] } = {},
 ): HostClient {
-  const host = startHost({ appData, adapters: [], ghBinary });
+  const host = startHost({ appData, adapters, ghBinary });
   const { port1, port2 } = new MessageChannel();
   host.connect(nodePort(port1));
   const client = createHostClient(nodePort(port2));
@@ -132,10 +148,6 @@ test("a not-onboarded Project rejects Plan submission without appending an Event
   await client.subscribe(id, 0, (event) => events.push(event));
   await client.query(id, "board");
   expect(events).toEqual([]);
-  for (const type of ["onboarding.start", "onboarding.stop"])
-    await expect(client.command(id, { type })).rejects.toMatchObject({
-      code: "bad-request",
-    });
 });
 
 test("manual confirmation validates before writing and uses the pending models", async () => {
@@ -641,6 +653,95 @@ test("inspect refuses allow entries that reach always-denied git operations or b
   ]);
 });
 
+test("inspect and Engine start refuse a Role whose Adapter isn't installed or lacks a capability the Role needs", async () => {
+  const appData = tempDir();
+  const config = {
+    ...validConfig,
+    roles: {
+      planner: { adapter: "claude-code", model: "opus" },
+      ...validConfig.roles,
+    },
+  };
+  const repo = repoWithRemote({
+    "segno.config.json": `${JSON.stringify(config)}\n`,
+  });
+  const missing: AgentAdapter = {
+    ...idleAdapter(),
+    detect: async () => ({ installed: false }),
+  };
+  const errorsOf = async (adapters: AgentAdapter[]) =>
+    (await hostAt(tempDir(), { adapters }).projects.inspect(repo)).errors.map(
+      ({ path, code, message }) => ({ path, code, message }),
+    );
+
+  expect(await errorsOf([missing])).toEqual(
+    ["planner", "coder", "reviewer"].map((role) => ({
+      path: `/roles/${role}/adapter`,
+      code: "adapter",
+      message: "claude-code is not installed.",
+    })),
+  );
+  expect(await errorsOf([])).toEqual(await errorsOf([missing]));
+  const capabilities = idleAdapter().capabilities;
+  expect(
+    await errorsOf([
+      {
+        ...idleAdapter(),
+        capabilities: { ...capabilities, structuredOutput: false },
+      },
+    ]),
+  ).toEqual([
+    {
+      path: "/roles/planner/adapter",
+      code: "adapter",
+      message:
+        "claude-code can't enforce structured output, which the Planner needs.",
+    },
+    {
+      path: "/roles/reviewer/adapter",
+      code: "adapter",
+      message:
+        "claude-code can't enforce structured output, which the Reviewer needs.",
+    },
+  ]);
+  expect(
+    await errorsOf([
+      {
+        ...idleAdapter(),
+        capabilities: { ...capabilities, toolAllowlist: false, resume: false },
+      },
+    ]),
+  ).toEqual(
+    [
+      ["planner", "Planner"],
+      ["coder", "Coder"],
+      ["reviewer", "Reviewer"],
+    ].map(([role, name]) => ({
+      path: `/roles/${role}/adapter`,
+      code: "adapter",
+      message: `claude-code can't enforce a tool allowlist, which the ${name} needs.`,
+    })),
+  );
+
+  const { id } = await hostAt(appData).projects.add(repo);
+  expect(
+    await hostAt(appData, { adapters: [missing] }).projects.list(),
+  ).toEqual([
+    expect.objectContaining({
+      id,
+      status: "unavailable",
+      reason: "invalid-config",
+      errors: ["planner", "coder", "reviewer"].map((role) =>
+        expect.objectContaining({
+          file: "segno.config.json",
+          path: `/roles/${role}/adapter`,
+          code: "adapter",
+        }),
+      ),
+    }),
+  ]);
+});
+
 const nodeRepo = {
   "package.json": JSON.stringify({ scripts: { test: "node --test" } }),
   "package-lock.json": "{}",
@@ -827,10 +928,10 @@ test("queries read the Plan and Phase level of a Project", async () => {
   // A Plan awaiting approval is not on the board.
   expect(await client.query(id, "board")).toEqual(empty);
   await client.command(id, { type: "plan.approve", planId });
-  // With no Adapter, the Phase starts and its Tasks stay queued.
+  // The Phase starts, and its first Task's Coder Run waits to be stopped.
   await expect
-    .poll(async () => (await client.query(id, "board")).phase)
-    .not.toBeNull();
+    .poll(async () => (await client.query(id, "board")).tasks[0]?.state)
+    .toBe("coding");
   expect(await client.query(id, "board")).toMatchObject({
     plan: {
       id: planId,
@@ -845,7 +946,7 @@ test("queries read the Plan and Phase level of a Project", async () => {
       branch: "segno/search-saved-notes/search-index",
     },
     tasks: [
-      { id: "index-notes", state: "ready", highRisk: true },
+      { id: "index-notes", state: "coding", highRisk: true },
       { id: "query-notes", state: "waiting", waitReason: "needs index-notes" },
       {
         id: "search-index-docs",
@@ -881,7 +982,10 @@ test("queries read the Plan and Phase level of a Project", async () => {
   expect(exported.match(/generated: true/g)).toHaveLength(2);
   expect(await client.query(id, "phases")).toEqual([]);
   expect(
-    await client.query(id, "phaseEvents", { phaseId: "search-index" }),
+    (await client.query(id, "phaseEvents", { phaseId: "search-index" })).slice(
+      0,
+      3,
+    ),
   ).toEqual([
     expect.objectContaining({ seq: 2, type: "plan.submitted" }),
     expect.objectContaining({ seq: 3, type: "plan.approved" }),
@@ -1159,9 +1263,10 @@ test("restarting the host gives identical board and awaiting results", async () 
   await client.command(b.id, { type: "plan.submit", yaml: twoPhase });
   const planId = (await client.query(b.id, "awaiting"))[0]?.planId;
   await client.command(b.id, { type: "plan.approve", planId });
+  // Its first Coder Run waits to be stopped, so the board stays put.
   await expect
-    .poll(async () => (await client.query(b.id, "board")).phase)
-    .not.toBeNull();
+    .poll(async () => (await client.query(b.id, "board")).tasks[0]?.state)
+    .toBe("coding");
   const before = await Promise.all(
     [a.id, b.id].flatMap((id) => [
       client.query(id, "board"),

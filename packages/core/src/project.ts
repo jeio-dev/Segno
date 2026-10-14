@@ -10,6 +10,10 @@ import type {
   TaskStatus,
   Verdict,
 } from "./events.js";
+import type {
+  OnboardingFailureReason,
+  OnboardingProposal,
+} from "./onboarding.js";
 
 export interface PhaseState {
   id: string;
@@ -78,12 +82,27 @@ export interface RunState {
 
 export interface AwaitingItem {
   id: number;
-  kind: "plan-approval";
-  planId: string;
+  kind: "plan-approval" | "onboarding-review";
+  /** Set for every item about a Plan. */
+  planId?: string;
   phaseId?: string;
   taskId?: string;
+  /** The onboarding Run whose proposal awaits review. */
+  runId?: string;
   title: string;
   createdAt: string;
+}
+
+/** Where onboarding stands (api.md, the `onboarding` query) [ADR-0049]. */
+export interface OnboardingState {
+  state: "idle" | "running" | "proposed" | "failed" | "done";
+  runId?: string;
+  proposal?: OnboardingProposal;
+  failure?: {
+    reason: OnboardingFailureReason;
+    detail?: string;
+    errors?: unknown[];
+  };
 }
 
 export interface State {
@@ -92,6 +111,7 @@ export interface State {
   tasks: TaskState[];
   runs: RunState[];
   awaiting: AwaitingItem[];
+  onboarding: OnboardingState;
 }
 
 /** The Task states that hold a run slot [ADR-0051]. */
@@ -117,6 +137,7 @@ export function project(events: readonly Event[]): State {
     tasks: [],
     runs: [],
     awaiting: [],
+    onboarding: { state: "idle" },
   };
   const planOf = (planId: string) => {
     const plan = state.plans.find(({ id }) => id === planId);
@@ -144,6 +165,45 @@ export function project(events: readonly Event[]): State {
   for (const event of events) {
     state.lastSeq = event.seq;
     switch (event.type) {
+      case "onboarding.started":
+        state.onboarding = { state: "running", runId: event.payload.runId };
+        break;
+      case "onboarding.proposed":
+        state.onboarding = {
+          state: "proposed",
+          runId: event.payload.runId,
+          proposal: copy(event.payload.proposal),
+        };
+        state.awaiting.push({
+          id: event.seq,
+          kind: "onboarding-review",
+          runId: event.payload.runId,
+          title: "Review the onboarding proposal",
+          createdAt: event.ts,
+        });
+        break;
+      case "onboarding.failed": {
+        const { runId, reason, detail, errors } = event.payload;
+        state.onboarding = {
+          state: "failed",
+          runId,
+          failure: {
+            reason,
+            ...(detail === undefined ? {} : { detail }),
+            ...(errors === undefined ? {} : { errors: copy(errors) }),
+          },
+        };
+        break;
+      }
+      case "onboarding.stopped":
+        state.onboarding = { state: "idle" };
+        break;
+      case "onboarding.confirmed":
+        state.onboarding = { state: "done" };
+        state.awaiting = state.awaiting.filter(
+          ({ kind }) => kind !== "onboarding-review",
+        );
+        break;
       case "plan.submitted": {
         const { planId, slug, plan, sourcePath } = event.payload;
         state.plans.push({
@@ -269,6 +329,9 @@ export function project(events: readonly Event[]): State {
         run.outcome = outcome;
         if (exitCode !== undefined) run.exitCode = exitCode;
         if (detail !== undefined) run.detail = detail;
+        // A rate-limited onboarding Run records no failure (B8 pauses it).
+        if (outcome === "rate-limited" && state.onboarding.runId === runId)
+          state.onboarding = { state: "idle" };
         break;
       }
       case "verdict.recorded":

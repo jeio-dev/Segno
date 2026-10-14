@@ -1,3 +1,7 @@
+---
+status: accepted, amended by ADR-0055
+---
+
 # Onboarding, not a settings form, makes a Project ready
 
 Adding a Project without a `segno.config.json` used to show the detected settings and keep **Add** disabled until a test command was typed. That is the wrong job to give a beginner. Now **Add** asks only for a model per agent Role (Planner, Coder, Reviewer) and lands on the board. The models are kept as the Project's pending config in its app data directory.

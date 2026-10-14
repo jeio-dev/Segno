@@ -128,13 +128,15 @@ Sources: [ADR-0004].
 git push, git checkout, git switch, git merge, git rebase, git reset, git branch, git worktree
 ```
 
+They're enforced by the agent CLI's prefix-matching permission rules, which hold for every profile with an explicit shell allowlist. Under the onboarding profile, whose shell is unrestricted, they're best effort: another spelling of the same command, such as `git -C . push`, isn't matched [ADR-0055].
+
 Network access (web fetch and search tools, `curl`, `wget`) is denied unless the Role's `allow` adds it [ADR-0004] [ADR-0025]. Config can only *add* entries. It can never remove an always-denied entry or turn on any bypass mode [ADR-0004].
 
 The developer's personal agent settings never contribute permissions to a Run [ADR-0004].
 
 ## Claude Code Adapter (v1)
 
-It maps a `RunSpec` onto `claude -p` (verified against Claude Code 2.1.296) [ADR-0017] [ADR-0004]:
+It maps a `RunSpec` onto `claude -p` (verified against Claude Code 2.1.299) [ADR-0017] [ADR-0004]:
 
 | RunSpec | Flag |
 |---|---|
@@ -148,6 +150,7 @@ It maps a `RunSpec` onto `claude -p` (verified against Claude Code 2.1.296) [ADR
 | settings isolation | `--setting-sources project`, so user and local settings are not loaded [ADR-0004] |
 | `mcp: false` | `--strict-mcp-config` with no `--mcp-config` |
 | `outputSchema` | `--json-schema <schema>` |
+| `kind: probe` | `--tools ""`: no tools at all, whatever the profile allows [ADR-0054] |
 
 Capabilities: `resume`, `structuredOutput` and `toolAllowlist` are all true. `usage` is true only if the installed version's stream reports usage, as detected by `detect()` [ADR-0017] [ADR-0021].
 
@@ -282,7 +285,7 @@ The Engine builds every prompt from fixed ingredients and writes it to `prompt.m
 | `docs` | Phase title and Plan summary; each `done` Task's title and final Verdict summary; advisory Findings from the Phase; the Phase diff range against `baseBranch`; the Phase `docs` block; `docs.changelog` | transcripts |
 | `onboarding` | the detected settings as a starting guess to verify; the check order and the rule never to weaken a failing suite; the instruction to run the setup command and the chosen check and report their exit codes and durations; the proposal schema | anything about Plans or Tasks |
 | `planner` **(v1.2)** | Planning session: the brief and the thread so far (through session resume), plus the Plan schema. Ask Planner: the Task definition, its Verdicts, the last 200 lines of its last test log, the Block reason and the fragment schema | Coder transcripts |
-| `probe` | a minimal fixed prompt, with no tools | anything else |
+| `probe` | a minimal fixed prompt, with no tools [ADR-0054] | anything else |
 
 Sources: [ADR-0024] [ADR-0010] [ADR-0021] [ADR-0049] [brief §Principles].
 

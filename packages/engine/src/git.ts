@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { rm } from "node:fs/promises";
 
 /** A git operation that failed without a conflict: an infra failure [ADR-0029]. */
 export class GitError extends Error {
@@ -71,6 +72,28 @@ export async function createTaskWorktree(
   { path, branch, from }: { path: string; branch: string; from: string },
 ) {
   await git(repo, "worktree", "add", "--quiet", "-b", branch, path, from);
+}
+
+/**
+ * Onboarding's scratch worktree, detached at `ref` with no branch; returns
+ * the commit it was detached at [ADR-0049].
+ */
+export async function createScratchWorktree(
+  repo: string,
+  { path, ref }: { path: string; ref: string },
+) {
+  const sha = await git(repo, "rev-parse", "--verify", `${ref}^{commit}`);
+  await git(repo, "worktree", "add", "--quiet", "--detach", path, sha);
+  return sha;
+}
+
+/** Deletes the scratch worktree, including one a crash left behind. */
+export async function removeScratchWorktree(repo: string, path: string) {
+  await git(repo, "worktree", "remove", "--force", "--force", path).catch(
+    () => {},
+  );
+  await rm(path, { recursive: true, force: true });
+  await git(repo, "worktree", "prune");
 }
 
 /** Commits a Segno-made commit with the developer's identity and trailer [ADR-0029]. */

@@ -7,13 +7,14 @@ import {
   type PlanState,
   type ProjectSummary,
   type State,
+  type Usage,
 } from "@segno/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { errorMessage } from "../format.js";
 import type { AppStore } from "../store.js";
 import { AwaitingPanel } from "./AwaitingPanel.js";
 import { CardDrawer } from "./CardDrawer.js";
-import { Onboarding } from "./Onboarding.js";
+import { Onboarding, onboardingReviewId } from "./Onboarding.js";
 import { PlanReview } from "./PlanReview.js";
 import { RejectionNotice } from "./RejectionNotice.js";
 import { TaskBoard } from "./TaskBoard.js";
@@ -66,7 +67,17 @@ export function ProjectView({
         config={config}
         onReview={setReviewing}
       />
-      <AwaitingPanel items={state?.awaiting} onReview={setReviewing} />
+      <AwaitingPanel
+        items={state?.awaiting}
+        onReview={(item) => {
+          // The proposal's review is on the not-onboarded board itself.
+          if (item.kind === "onboarding-review")
+            document
+              .getElementById(onboardingReviewId)
+              ?.scrollIntoView({ behavior: "smooth" });
+          else setReviewing(item);
+        }}
+      />
       {reviewing && reviewedPlan && (
         <PlanReview
           client={client}
@@ -114,6 +125,7 @@ function Board({
       ),
     [state],
   );
+  const usage = useUsage(client, project.id, state?.lastSeq);
   const [selected, setSelected] = useState<string>();
   const selectedTask = state?.tasks.find(
     ({ id, planId }) => id === selected && planId === active?.id,
@@ -143,20 +155,23 @@ function Board({
             </div>
           )}
         </div>
-        {active && (
+        {(active || usage) && (
           <div className="row">
-            {board && (
+            {usage && <UsageMeter usage={usage} />}
+            {active && board && (
               <span className="session-meter mono" title="Session meter">
                 Sessions {board.sessions.live}/{board.sessions.concurrency} ·{" "}
                 {board.sessions.startedInPhase} this phase
               </span>
             )}
-            <ExportPlan
-              store={store}
-              client={client}
-              projectId={project.id}
-              plan={active}
-            />
+            {active && (
+              <ExportPlan
+                store={store}
+                client={client}
+                projectId={project.id}
+                plan={active}
+              />
+            )}
           </div>
         )}
       </header>
@@ -173,6 +188,7 @@ function Board({
           <Onboarding
             client={client}
             projectId={project.id}
+            state={state}
             onSaved={() => store.refreshProjects()}
           />
         ) : active ? (
@@ -218,6 +234,52 @@ function Board({
         />
       )}
     </section>
+  );
+}
+
+/**
+ * Subscription usage from the `board` query, which alone holds it: it's
+ * reported in memory, never recorded. Re-read on each Event and every 30 s.
+ */
+function useUsage(
+  client: HostClient,
+  projectId: string,
+  lastSeq: number | undefined,
+) {
+  const [usage, setUsage] = useState<Usage>();
+  useEffect(() => {
+    // Read once the Project's Events have loaded, and again after each one.
+    if (lastSeq === undefined) return;
+    let current = true;
+    const read = () =>
+      client
+        .query(projectId, "board")
+        .then((board) => current && setUsage(board.usage))
+        .catch(() => {});
+    void read();
+    const timer = setInterval(read, 30_000);
+    return () => {
+      current = false;
+      clearInterval(timer);
+    };
+  }, [client, projectId, lastSeq]);
+  return usage;
+}
+
+/** Used / limit and the reset time, or only the last known reset time [ADR-0021]. */
+function UsageMeter({ usage }: { usage: Usage }) {
+  const resets =
+    usage.resetAt &&
+    new Date(usage.resetAt).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  return (
+    <span className="session-meter mono" title="Subscription usage">
+      {usage.used === undefined
+        ? `Resets ${resets}`
+        : `Usage ${usage.used}${usage.limit === undefined ? "" : `/${usage.limit}`}${resets ? ` · resets ${resets}` : ""}`}
+    </span>
   );
 }
 
