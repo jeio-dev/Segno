@@ -21,6 +21,7 @@ import type {
 } from "./events.js";
 import type {
   AwaitingItem,
+  OnboardingState,
   PlanState,
   RunState,
   TaskState,
@@ -146,6 +147,18 @@ export interface Board {
   mergeQueue: string[];
   /** Live agent Runs against concurrency, and agent sessions in this Phase. */
   sessions: { live: number; concurrency: number; startedInPhase: number };
+  /** Subscription usage, only as the Adapter reports it [ADR-0021]. */
+  usage?: Usage;
+}
+
+/**
+ * The latest usage an Adapter reported, or only the last known reset time
+ * when it doesn't report usage. Never estimated [ADR-0021].
+ */
+export interface Usage {
+  used?: number;
+  limit?: number;
+  resetAt?: string;
 }
 
 /** The `task` query: the full Task with its Runs. */
@@ -201,8 +214,7 @@ export interface Queries {
   config: { params: undefined; result: ConfigStatus };
   onboarding: {
     params: undefined;
-    result: {
-      state: "idle" | "done";
+    result: OnboardingState & {
       detected: {
         config: SegnoConfig;
         packageManager?: InspectResult["packageManager"];

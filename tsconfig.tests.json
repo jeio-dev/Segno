@@ -9,6 +9,7 @@
   "include": [
     "vitest.config.ts",
     "vitest.e2e.config.ts",
+    "vitest.live.config.ts",
     "packages/app/electron.vite.config.ts",
     "packages/*/tests/**/*.ts",
     "packages/cli/tsdown.config.ts"
@@ -17,6 +18,7 @@
     { "path": "packages/plan-format" },
     { "path": "packages/core" },
     { "path": "packages/engine" },
+    { "path": "packages/adapter-claude-code" },
     { "path": "packages/host" },
     { "path": "packages/ui" }
   ]

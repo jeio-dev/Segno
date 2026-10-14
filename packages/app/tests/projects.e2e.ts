@@ -38,7 +38,7 @@ test("adding a repo without a config writes the reviewed settings uncommitted an
     await page
       .getByRole("button", { name: "Onboard project", exact: true })
       .count(),
-  ).toBe(0);
+  ).toBe(1);
   expect(
     await page.getByRole("button", { name: "Submit Plan file…" }).count(),
   ).toBe(0);

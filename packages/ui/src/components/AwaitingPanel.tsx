@@ -24,22 +24,22 @@ export function AwaitingPanel({
             <div className="row">
               <span className="badge badge-muted">{item.kind}</span>
               <span className="mono muted" title={item.planId}>
-                {item.taskId ?? item.planId.slice(0, 8)}
+                {item.taskId ?? item.planId?.slice(0, 8)}
               </span>
             </div>
             <span className="awaiting-item-title">{item.title}</span>
             <span className="muted">{age(item.createdAt)}</span>
-            {item.kind === "plan-approval" && (
-              <div className="row">
-                <button
-                  type="button"
-                  className="button"
-                  onClick={() => onReview(item)}
-                >
-                  Review plan
-                </button>
-              </div>
-            )}
+            <div className="row">
+              <button
+                type="button"
+                className="button"
+                onClick={() => onReview(item)}
+              >
+                {item.kind === "plan-approval"
+                  ? "Review plan"
+                  : "Review proposal"}
+              </button>
+            </div>
           </li>
         ))}
       </ul>

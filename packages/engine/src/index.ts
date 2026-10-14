@@ -7,3 +7,4 @@ export type {
 } from "./engine.js";
 export { BadRequestError, NotFoundError, openEngine } from "./engine.js";
 export { diffAgainstPhase } from "./git.js";
+export type { LimitEvent } from "./live.js";

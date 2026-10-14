@@ -17,6 +17,9 @@ export default defineConfig({
       test: {
         name,
         environment: "node",
+        // Whole Task flows run real git; under a full parallel run they can
+        // take longer than the 1 s default.
+        expect: { poll: { timeout: 10_000 } },
         include: [`packages/${name}/tests/**/*.test.ts`],
       },
     })),

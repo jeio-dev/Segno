@@ -68,6 +68,8 @@ test("the Plan's cards move through the board to Done", async () => {
       .getByRole("button", { name: new RegExp(`^${id} `) })
       .waitFor({ timeout: 45_000 });
   await board.getByText("Sessions 0/1 · 6 this phase").waitFor();
+  // The fake Adapter reports usage, so the board shows it.
+  await board.getByText(/^Usage 37\/100 · resets \d\d:\d\d/).waitFor();
 });
 
 test("the drawer's Transcript tab streams a live Run", async () => {

@@ -1,5 +1,10 @@
+import { claudeCodeAdapter } from "@segno/adapter-claude-code";
 import type { AgentAdapter } from "@segno/core";
-import { fakeAdapter, writesFiles } from "@segno/engine/testing";
+import {
+  fakeAdapter,
+  proposesFromRepo,
+  writesFiles,
+} from "@segno/engine/testing";
 import { startHost } from "@segno/host";
 import type { MessagePortMain } from "electron";
 
@@ -8,22 +13,34 @@ const appData = process.env.SEGNO_APP_DATA;
 if (!appData) throw new Error("SEGNO_APP_DATA is not set for the Engine host.");
 
 /**
- * The real Claude Code Adapter arrives in B5. Until then, S9 and hand demos
- * opt in to the fake one, paced so a live Run can be watched.
+ * The real Claude Code Adapter [ADR-0017]. S9 and hand demos opt in to the
+ * fake one, paced so a live Run can be watched, which also reports usage.
  */
 function adapters(): AgentAdapter[] {
-  if (process.env.SEGNO_FAKE_ADAPTER !== "1") return [];
+  if (process.env.SEGNO_FAKE_ADAPTER !== "1") {
+    const claude = claudeCodeAdapter();
+    // detect() also learns whether the installed version reports usage.
+    void claude.detect().catch(() => {});
+    return [claude];
+  }
   const coder = writesFiles();
   return [
     fakeAdapter(
       {
         async coder(run) {
+          run.event({
+            type: "usage",
+            used: 37,
+            limit: 100,
+            resetAt: new Date(Date.now() + 3 * 3600_000).toISOString(),
+          });
           await run.output("Reading the Task.\n");
           await run.output("Planning the change.\n");
           return coder(run);
         },
+        onboarding: proposesFromRepo(),
       },
-      { paceMs: 700 },
+      { paceMs: 700, usage: true },
     ),
   ];
 }

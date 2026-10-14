@@ -20,8 +20,10 @@ import {
 } from "@segno/core";
 import { type Clock, type Engine, openEngine } from "@segno/engine";
 import { validateCommittedText, validateCommittedValue } from "./config.js";
+import { detectConfig } from "./detect.js";
 import { realPath, topLevelOf } from "./git.js";
 import type { HostLog } from "./log.js";
+import type { UsageStore } from "./usage.js";
 
 export interface RegistryEntry {
   id: string;
@@ -57,6 +59,7 @@ export function openProjects(
   log: HostLog,
   clock: Clock,
   adapters: readonly AgentAdapter[],
+  usage: UsageStore,
 ) {
   const registryPath = join(appData, "projects.json");
   const projects = new Map<string, Project>();
@@ -138,7 +141,31 @@ export function openProjects(
             return resolveConfig(config, running?.local ?? local).effective;
           },
           adapters,
+          async onboarding() {
+            const settings = running?.local ?? local ?? {};
+            const pending = running?.pending ?? null;
+            const { config: detected } = await detectConfig(entry.path);
+            const coderAllow = detected.roles.coder.allow;
+            return {
+              adapter: "claude-code",
+              model:
+                settings.roles?.planner?.model ??
+                pending?.roles.planner.model ??
+                defaultProjectModels.planner,
+              remote: detected.remote,
+              baseBranch: detected.baseBranch,
+              guess: {
+                ...(detected.tests.command ? { tests: detected.tests } : {}),
+                ...(detected.setup ? { setup: detected.setup } : {}),
+                baseBranch: detected.baseBranch,
+                remote: detected.remote,
+                ...(coderAllow.length ? { coderAllow } : {}),
+              },
+              worktreeRoot: settings.worktreeRoot,
+            };
+          },
         },
+        onLimit: usage.report,
         onError: (error) =>
           log.write("error", "Engine work failed.", {
             projectId: entry.id,
@@ -151,7 +178,11 @@ export function openProjects(
               value,
               running?.pending ?? null,
             );
-            const errors = await validateCommittedValue(entry.path, candidate);
+            const errors = await validateCommittedValue(
+              entry.path,
+              candidate,
+              adapters,
+            );
             return errors.length
               ? { errors }
               : { config: candidate as SegnoConfig, errors };
@@ -273,7 +304,7 @@ export function openProjects(
     if (text instanceof Error) {
       errors.push(unreadable("segno.config.json", text));
     } else if (text !== undefined) {
-      const result = await validateCommittedText(entry.path, text);
+      const result = await validateCommittedText(entry.path, text, adapters);
       errors.push(...result.errors);
       if (!result.errors.length) config = result.value;
     } else {

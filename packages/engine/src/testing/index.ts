@@ -2,6 +2,8 @@ export type { FakeAdapter, FakeRun, FakeScript } from "./adapter.js";
 export {
   approves,
   fakeAdapter,
+  proposes,
+  proposesFromRepo,
   runsUntilStopped,
   writesFiles,
 } from "./adapter.js";

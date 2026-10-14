@@ -572,6 +572,7 @@ test("a failed SQLite write appends nothing, consumes no seq and does not poison
       tasks: [],
       runs: [],
       awaiting: [],
+      onboarding: { state: "idle" },
     });
     db.exec("DROP TRIGGER fail_write");
     expect(await engine.handle({ type: "plan.submit", yaml })).toEqual({

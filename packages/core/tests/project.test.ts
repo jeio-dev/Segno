@@ -59,6 +59,7 @@ test("a submitted Plan is pending approval with one Awaiting-you item", () => {
         createdAt: "2026-10-13T20:00:00.000Z",
       },
     ],
+    onboarding: { state: "idle" },
   });
 });
 

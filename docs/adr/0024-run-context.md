@@ -1,3 +1,7 @@
+---
+status: accepted, amended by ADR-0058
+---
+
 # Each Run gets a fixed, minimal context built by the Engine
 
 The Engine builds every prompt from fixed ingredients and records it as `prompt.md`.

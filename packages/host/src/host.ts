@@ -19,6 +19,7 @@ import { openHostLog } from "./log.js";
 import { openProjects } from "./projects.js";
 import { runQuery } from "./queries.js";
 import { openSettings } from "./settings.js";
+import { openUsage } from "./usage.js";
 
 export interface HostDeps {
   appData: string;
@@ -42,7 +43,8 @@ export function startHost({
   ghBinary = "gh",
 }: HostDeps) {
   const log = openHostLog(appData);
-  const projects = openProjects(appData, log, clock, adapters);
+  const usage = openUsage();
+  const projects = openProjects(appData, log, clock, adapters, usage);
   const settings = openSettings(appData, log);
   const ready = mkdir(appData, { recursive: true }).then(() =>
     Promise.all([settings.load(), projects.load()]),
@@ -78,7 +80,7 @@ export function startHost({
       }
     },
     async query(projectId, name, params) {
-      return runQuery(projects.running(projectId), name, params);
+      return runQuery(projects.running(projectId), name, params, usage);
     },
     async "projects.list"() {
       return projects.list();
@@ -89,7 +91,11 @@ export function startHost({
       const configPath = join(top, "segno.config.json");
       if (existsSync(configPath)) {
         const text = await readFile(configPath, "utf8");
-        const { data, errors } = await validateCommittedText(top, text);
+        const { data, errors } = await validateCommittedText(
+          top,
+          text,
+          adapters,
+        );
         return {
           path: top,
           source: "file",

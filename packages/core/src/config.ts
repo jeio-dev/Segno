@@ -275,6 +275,7 @@ export type ConfigSource = "file" | "local" | "default";
 /** A config with its defaults filled by `resolveConfig`. */
 export type EffectiveConfig = SegnoConfig & {
   remote: string;
+  docs: { changelog: string };
   worktreeRoot?: string;
 };
 

@@ -1,5 +1,12 @@
 import type { Plan, Risk, Task } from "@segno/plan-format";
 import type { ConfigError, SegnoConfig } from "./config.js";
+import type {
+  OnboardingFailureReason,
+  OnboardingProposal,
+} from "./onboarding.js";
+import type { Verdict } from "./verdict.js";
+
+export type { Verdict };
 
 export type PlanStatus =
   | "awaiting-approval"
@@ -75,17 +82,6 @@ export interface Finding {
   createdInRun?: string;
 }
 
-// The Verdict's consistency checks and runtime schema arrive in B5/B6.
-export interface Verdict {
-  schemaVersion: 1;
-  decision: "approve" | "reject";
-  summary: string;
-  acceptance: { index: number; met: boolean; note: string }[];
-  docs: { needed: boolean; satisfied: boolean; note: string };
-  findings: Omit<Finding, "id" | "source" | "createdInRun">[];
-  risk?: { flag: Risk["flags"][number]; reason: string }[];
-}
-
 type PlanId = { planId: string };
 type PhaseId = { phaseId: string };
 type TaskId = { taskId: string };
@@ -94,6 +90,14 @@ type ConfigSource = "file" | "local" | "command";
 
 /** All v1 Event payloads. Behavior beyond Plans is added in later build phases. */
 export interface EventPayloads {
+  "onboarding.started": RunId;
+  "onboarding.proposed": RunId & { proposal: OnboardingProposal };
+  "onboarding.failed": RunId & {
+    reason: OnboardingFailureReason;
+    detail?: string;
+    errors?: unknown[];
+  };
+  "onboarding.stopped": RunId;
   "onboarding.confirmed": {
     via: "manual" | "proposal" | "file";
     config?: SegnoConfig;
@@ -185,6 +189,10 @@ export interface EventPayloads {
 
 /** Runtime catalog recognition; the first-release catalog freezes in B10. */
 export const eventVersions = {
+  "onboarding.started": 1,
+  "onboarding.proposed": 1,
+  "onboarding.failed": 1,
+  "onboarding.stopped": 1,
   "onboarding.confirmed": 1,
   "plan.submitted": 1,
   "plan.approved": 1,

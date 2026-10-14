@@ -21,7 +21,9 @@ import {
   GitError,
   slugsWithBranches,
 } from "./git.js";
-import { type Draft, type LiveRun, openWork } from "./work.js";
+import type { LimitEvent, LiveRuns } from "./live.js";
+import { type OnboardingContext, openOnboarding } from "./onboarding.js";
+import { type Draft, openWork } from "./work.js";
 
 export interface Clock {
   now(): Date;
@@ -37,6 +39,8 @@ export interface Workspace {
   /** The current effective config. */
   config(): EffectiveConfig;
   adapters: readonly AgentAdapter[];
+  /** What an onboarding Run needs, while the Project isn't onboarded. */
+  onboarding?(): Promise<OnboardingContext>;
 }
 export interface ConfigStore {
   prepareOnboarding(
@@ -54,6 +58,8 @@ export interface EngineOptions {
   workspace?: Workspace;
   /** Reports a failure of internal work, which has no caller to reject. */
   onError?: (error: unknown) => void;
+  /** Usage and rate-limit signals from agent Runs, as Adapters report them. */
+  onLimit?: (adapter: AgentAdapter, event: LimitEvent) => void;
 }
 
 /** A deferred Phase start is retried this long after the failed fetch [ADR-0029]. */
@@ -83,6 +89,7 @@ export function openEngine({
   configStore,
   workspace,
   onError = () => {},
+  onLimit = () => {},
 }: EngineOptions) {
   const setTimer =
     clock.setTimer?.bind(clock) ??
@@ -104,7 +111,7 @@ export function openEngine({
   let queued = 0;
   let idleWaiters: (() => void)[] = [];
   let cancelStartRetry: (() => void) | undefined;
-  const live = new Map<string, LiveRun>();
+  const live: LiveRuns = new Map();
   const work =
     workspace &&
     openWork({
@@ -118,6 +125,25 @@ export function openEngine({
           await drive();
         }),
       live,
+      onLimit,
+      onError,
+    });
+  const onboardingContext = workspace?.onboarding;
+  const onboarding =
+    workspace &&
+    configStore &&
+    onboardingContext &&
+    openOnboarding({
+      repo: workspace.repo,
+      projectDir: workspace.projectDir,
+      adapters: workspace.adapters,
+      context: onboardingContext,
+      prepare: (config) => configStore.prepareOnboarding(config),
+      readState: () => project(log.readEvents()),
+      emit,
+      internal: (job) => internal(job),
+      live,
+      onLimit,
       onError,
     });
   return {
@@ -347,7 +373,9 @@ export function openEngine({
       commandSchema.options.some(
         (option) => option.shape.type.value === type,
       ) || later;
-    if (recognized && type !== "onboarding.confirm" && !isOnboarded())
+    const onboardingCommand =
+      typeof type === "string" && type.startsWith("onboarding.");
+    if (recognized && !onboardingCommand && !isOnboarded())
       return {
         ok: false,
         code: "not-onboarded",
@@ -417,12 +445,28 @@ export function openEngine({
     }
     const command = validated.data;
     const state = project(log.readEvents());
-    if (command.type === "onboarding.confirm") {
+    if (
+      command.type === "onboarding.start" ||
+      command.type === "onboarding.stop" ||
+      command.type === "onboarding.confirm"
+    ) {
       if (isOnboarded() || !configStore)
         return {
           ok: false,
           code: "invalid-transition",
           message: "The Project is already onboarded.",
+        };
+      if (command.type !== "onboarding.confirm") {
+        if (!onboarding) throw new Error("This Engine can't run onboarding.");
+        return command.type === "onboarding.start"
+          ? onboarding.start()
+          : onboarding.stop();
+      }
+      if (state.onboarding.state === "running")
+        return {
+          ok: false,
+          code: "invalid-transition",
+          message: "An onboarding Run is live.",
         };
       const prepared = await configStore.prepareOnboarding(command.config);
       if (!prepared.config || prepared.errors.length)
@@ -439,7 +483,13 @@ export function openEngine({
         type: "onboarding.confirmed",
         v: 1,
         ts: clock.now().toISOString(),
-        payload: { via: "manual", config: prepared.config },
+        payload: {
+          // An open review means the proposal is what's being confirmed.
+          via: state.awaiting.some(({ kind }) => kind === "onboarding-review")
+            ? "proposal"
+            : "manual",
+          config: prepared.config,
+        },
       });
       await configStore.reload();
       return { ok: true, events: [seq] };

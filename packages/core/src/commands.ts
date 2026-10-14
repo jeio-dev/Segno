@@ -4,6 +4,8 @@ import { configErrorSchema } from "./config.js";
 
 const nonBlank = z.string().regex(/\S/, "Must contain non-whitespace text.");
 export const commandSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("onboarding.start") }),
+  z.strictObject({ type: z.literal("onboarding.stop") }),
   z.strictObject({
     type: z.literal("onboarding.confirm"),
     config: z.unknown(),

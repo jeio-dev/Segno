@@ -6,6 +6,13 @@ All notable changes to Segno are documented here, following [Keep a Changelog](h
 
 ### Added
 
+- The Claude Code Adapter: `claude -p` with stream-json, an explicit allowlist and no prompts, user settings and MCP servers left out, classification of every Run as completed, failed, crashed or rate-limited, and `stop()` for the whole process group. It's tested against recorded fixtures, and `pnpm test:live` re-records them. A probe Run has no tools (ADR-0054), the always-denied git operations are best effort under the onboarding profile (ADR-0055), and the repo's own `.claude/settings.json` grants are denied unless a Run already allows them (ADR-0056), and output schemas are passed without their `$schema` key, which Claude Code can't resolve (ADR-0057). The app now uses it by default.
+- Run context: every agent Run's prompt is built from fixed ingredients and kept as `prompt.md`, and lists the shell commands the Run may use, one at a time (ADR-0058). Coders and Reviewers can list and search files with `ls`, `grep`, `git ls-files` and `git grep` (ADR-0059). The Reviewer's output schema is the Verdict schema.
+- Onboarding: **Onboard project** runs the Planner in a scratch worktree to find and run the repo's checks and propose a config, with live output, **Stop onboarding**, **Retry onboarding**, and an `onboarding-review` with each value's reason, the commands run, the flags, **Confirm** and **Edit**.
+- Config validation refuses a Role whose Adapter isn't installed or lacks a capability it needs.
+- Subscription usage in the `board` query and the board header, only as Claude Code reports it.
+- `pnpm check:b5` and the developer-run `pnpm check:b5:live`; CI now runs `pnpm check:b5`.
+
 - Phases start when a Plan is approved: the remote is fetched and the Phase branch cut from `<remote>/<baseBranch>`, with the Docs task added. An unreachable remote defers the start and retries every 5 minutes.
 - Tasks run on the happy path: one Task per run slot, in Plan order, through setup, the Coder, `tests.command`, the Reviewer and the merge queue, each in its own worktree outside the repo with the `SEGNO_*` environment (ADR-0051). Leftover Coder changes are committed, every Segno commit has a `Segno-Task:` trailer, and the Phase branch moves only by fast-forward. Worktrees and Task branches are deleted once a Task is done, and its merged diff is kept.
 - Abandoning an active Plan stops its Run, supersedes unfinished Tasks and deletes their worktrees and Task branches.

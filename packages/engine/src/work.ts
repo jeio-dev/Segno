@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
@@ -18,29 +18,37 @@ import {
   type TaskState,
   type TaskStatus,
   type Verdict,
+  verdictJsonSchema,
+  verdictSchema,
 } from "@segno/core";
-import { permissionsFor, placeholderPrompt } from "./context.js";
+import {
+  coderPrompt,
+  docsPrompt,
+  permissionsFor,
+  reviewerPrompt,
+} from "./context.js";
 import {
   commitLeftovers,
   createTaskWorktree,
   diffAgainstPhase,
   fastForward,
+  git,
   type MergeResult,
   mergePhaseInto,
   removeTaskWorktree,
 } from "./git.js";
+import {
+  ended as endLive,
+  type LimitEvent,
+  type LiveRuns,
+  launchAgentRun,
+  send as sendLive,
+} from "./live.js";
 import { runScript, type ScriptResult } from "./script.js";
 
 export type Draft = {
   [T in EventType]: { type: T; payload: EventPayloads[T] };
 }[EventType];
-
-export interface LiveRun {
-  stop(): Promise<void>;
-  listeners: Set<(item: RunOutputItem) => void>;
-  /** Everything output so far, replayed to a listener that joins late. */
-  output: string[];
-}
 
 interface WorkDeps {
   repo: string;
@@ -51,7 +59,8 @@ interface WorkDeps {
   emit(drafts: readonly Draft[], planId?: string): number[];
   /** Queues an input behind the current one. */
   internal(work: () => Promise<unknown>): void;
-  live: Map<string, LiveRun>;
+  live: LiveRuns;
+  onLimit(adapter: AgentAdapter, event: LimitEvent): void;
   onError(error: unknown): void;
 }
 
@@ -102,12 +111,7 @@ export function openWork(deps: WorkDeps) {
   }
 
   function send(runId: string, item: RunOutputItem) {
-    const run = live.get(runId);
-    if (item.kind === "output") run?.output.push(item.text);
-    for (const listener of run?.listeners ?? [])
-      try {
-        listener(item);
-      } catch {}
+    sendLive(live, runId, item);
   }
 
   function isDocs({ phase, task }: Scope) {
@@ -119,10 +123,74 @@ export function openWork(deps: WorkDeps) {
     return deps.adapters.find((adapter) => adapter.id === id);
   }
 
-  function prepareAgentRun(
+  /** The Run context for an agent Run, built from fixed ingredients [ADR-0024]. */
+  async function contextFor(
+    { plan, phase, task }: Scope,
+    kind: "coder" | "docs" | "reviewer",
+    cwd: string,
+  ) {
+    const config = deps.config();
+    const permissions = permissionsFor(kind, config);
+    const definition = plan.definition.phases.find(({ id }) => id === phase.id);
+    if (!definition)
+      throw new Error(`Plan ${plan.id} has no Phase ${phase.id}.`);
+    if (kind === "reviewer") {
+      const base = await git(cwd, "merge-base", phase.branch, "HEAD");
+      return {
+        prompt: reviewerPrompt({
+          task: task.definition,
+          base,
+          schema: verdictJsonSchema,
+          permissions,
+        }),
+        outputSchema: verdictJsonSchema,
+      };
+    }
+    if (kind === "coder")
+      return {
+        prompt: coderPrompt({
+          plan: plan.definition,
+          phase: definition,
+          task: task.definition,
+          testsCommand: config.tests.command,
+          permissions,
+        }),
+      };
+    if (!phase.baseSha) throw new Error(`Phase ${phase.id} has no base.`);
+    const done = readState()
+      .tasks.filter(
+        (other) =>
+          other.planId === plan.id &&
+          other.phaseId === phase.id &&
+          other.id !== task.id &&
+          other.state === "done",
+      )
+      .sort((a, b) => a.order - b.order);
+    return {
+      prompt: docsPrompt({
+        plan: plan.definition,
+        phase: definition,
+        done: done.map(({ definition, verdicts }) => ({
+          title: definition.title,
+          summary: verdicts.at(-1)?.verdict.summary,
+        })),
+        advisory: done.flatMap(({ verdicts }) =>
+          verdicts.flatMap(({ verdict }) =>
+            verdict.findings.filter(({ severity }) => severity === "advisory"),
+          ),
+        ),
+        base: phase.baseSha,
+        baseBranch: config.baseBranch,
+        changelog: config.docs.changelog,
+        permissions,
+      }),
+    };
+  }
+
+  async function prepareAgentRun(
     scope: Scope,
     kind: "coder" | "docs" | "reviewer",
-  ): PreparedRun {
+  ): Promise<PreparedRun> {
     const config = deps.config();
     const role = kind === "reviewer" ? "reviewer" : "coder";
     const adapter = adapterFor(role);
@@ -132,11 +200,15 @@ export function openWork(deps: WorkDeps) {
       kind === "docs"
         ? (coder.docsModel ?? coder.model)
         : config.roles[role].model;
-    const runId = randomUUID();
-    const dir = runDir(runId);
-    const prompt = placeholderPrompt(kind, scope.task.definition);
     const worktree = scope.task.worktree;
     if (!worktree) throw new Error(`Task ${scope.task.id} has no worktree.`);
+    const { prompt, outputSchema } = await contextFor(
+      scope,
+      kind,
+      worktree.path,
+    );
+    const runId = randomUUID();
+    const dir = runDir(runId);
     return {
       started: {
         type: "run.started",
@@ -150,43 +222,28 @@ export function openWork(deps: WorkDeps) {
         },
       },
       launch() {
-        // prompt.md is exactly what the Run was given [ADR-0033].
-        writeFileSync(join(dir, "prompt.md"), prompt);
-        const handle = adapter.start({
-          runId,
-          kind,
-          model,
-          cwd: worktree.path,
-          prompt,
-          systemPrompt: "",
-          permissions: permissionsFor(kind, config),
-          env: env(runId, scope.task.id),
-          transcriptPath: join(dir, "transcript.jsonl"),
+        launchAgentRun({
+          adapter,
+          spec: {
+            runId,
+            kind,
+            model,
+            cwd: worktree.path,
+            prompt,
+            // The whole context is in prompt.md, so the record is exact [ADR-0033].
+            systemPrompt: "",
+            permissions: permissionsFor(kind, config),
+            ...(outputSchema ? { outputSchema } : {}),
+            env: env(runId, scope.task.id),
+            transcriptPath: join(dir, "transcript.jsonl"),
+          },
+          live,
+          onSession: (sessionId) =>
+            internal(async () => recordSession(runId, sessionId)),
+          onLimit: (event) => deps.onLimit(adapter, event),
+          onResult: (result) =>
+            internal(() => settle(runId, () => finishAgentRun(runId, result))),
         });
-        live.set(runId, {
-          stop: () => handle.stop(),
-          listeners: new Set(),
-          output: [],
-        });
-        const drained = (async () => {
-          for await (const event of handle.events) {
-            if (event.type === "started")
-              internal(async () => recordSession(runId, event.sessionId));
-            else if (event.type === "output")
-              send(runId, { kind: "output", text: event.text });
-          }
-        })().catch(() => {});
-        void Promise.all([
-          handle.result.catch(
-            (error): RunResult => ({
-              kind: "crashed",
-              detail: error instanceof Error ? error.message : String(error),
-            }),
-          ),
-          drained,
-        ]).then(([result]) =>
-          internal(() => settle(runId, () => finishAgentRun(runId, result))),
-        );
       },
     };
   }
@@ -338,8 +395,7 @@ export function openWork(deps: WorkDeps) {
 
   /** Ends the live stream once the Run's outcome is recorded. */
   function ended(runId: string, outcome: RunOutcome) {
-    send(runId, { kind: "end", outcome });
-    live.delete(runId);
+    endLive(live, runId, outcome);
   }
 
   async function recordSession(runId: string, sessionId: string) {
@@ -361,7 +417,11 @@ export function openWork(deps: WorkDeps) {
       return ended(runId, outcome);
     }
     if (run.kind === "reviewer") {
-      const verdict = result.structured as Verdict | undefined;
+      // Only a Verdict that matches its schema counts; repair is B6.
+      const parsed = verdictSchema.safeParse(result.structured);
+      const verdict: Verdict | undefined = parsed.success
+        ? parsed.data
+        : undefined;
       const approved = verdict?.decision === "approve" && !task.highRisk;
       // Rejections, malformed Verdicts and held Tasks are B6.
       commit(plan.id, [
@@ -427,7 +487,7 @@ export function openWork(deps: WorkDeps) {
         [
           task.state === "merging"
             ? prepareScriptRun(scope, "tests", deps.config().tests.command)
-            : prepareAgentRun(scope, isDocs(scope) ? "docs" : "coder"),
+            : await prepareAgentRun(scope, isDocs(scope) ? "docs" : "coder"),
         ],
       );
     } else if (task.state === "merging") await land(scope, [done]);
@@ -435,7 +495,7 @@ export function openWork(deps: WorkDeps) {
       commit(
         plan.id,
         [done, transition(task, "reviewing", "tests-passed")],
-        [prepareAgentRun(scope, "reviewer")],
+        [await prepareAgentRun(scope, "reviewer")],
       );
     ended(runId, "completed");
   }
@@ -576,7 +636,7 @@ export function openWork(deps: WorkDeps) {
       [
         setup
           ? prepareScriptRun(started, "setup", setup.command)
-          : prepareAgentRun(started, isDocs(started) ? "docs" : "coder"),
+          : await prepareAgentRun(started, isDocs(started) ? "docs" : "coder"),
       ],
     );
   }

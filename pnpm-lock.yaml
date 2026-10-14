@@ -188,10 +188,17 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
 
-  packages/adapter-claude-code: {}
+  packages/adapter-claude-code:
+    dependencies:
+      '@segno/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/app:
     dependencies:
+      '@segno/adapter-claude-code':
+        specifier: workspace:*
+        version: link:../adapter-claude-code
       '@segno/core':
         specifier: workspace:*
         version: link:../core
