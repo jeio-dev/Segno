@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0049, ADR-0054 and ADR-0055
+status: accepted, amended by ADR-0049, ADR-0054, ADR-0055 and ADR-0056
 ---
 
 # Headless runs use per-role allowlists, and anything else is denied without a prompt

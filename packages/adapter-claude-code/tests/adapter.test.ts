@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunEvent, RunSpec } from "@segno/core";
@@ -136,6 +142,87 @@ test("a probe Run has no tools at all", async () => {
     "--tools",
     "",
   ]);
+});
+
+test("the repo's own permission grants outside the Run's allowlist are denied", async () => {
+  const dir = tempDir();
+  const spec = coderSpec(dir, {
+    kind: "reviewer",
+    permissions: {
+      read: true,
+      edit: false,
+      shell: ["git log *"],
+      network: false,
+      mcp: false,
+      extraAllow: [],
+    },
+  });
+  mkdirSync(join(spec.cwd, ".claude"));
+  writeFileSync(
+    join(spec.cwd, ".claude", "settings.json"),
+    JSON.stringify({
+      permissions: {
+        allow: ["Bash(node *)", "Read(./**)", "Bash(git log *)", "Edit"],
+      },
+    }),
+  );
+  const { replay } = await run(spec, { fixture: "completed" });
+  const argv = replay.argv()[0] ?? [];
+  expect(
+    argv.slice(
+      argv.indexOf("--disallowedTools") + 1,
+      argv.indexOf("--setting-sources"),
+    ),
+  ).toEqual([...alwaysDenied, ...networkTools, "Bash(node *)", "Edit"]);
+});
+
+test("a repo grant the Run's allowlist already covers is left alone", async () => {
+  const spec = coderSpec(tempDir(), {
+    kind: "onboarding",
+    permissions: {
+      read: true,
+      edit: true,
+      shell: ["*"],
+      network: true,
+      mcp: false,
+      extraAllow: [],
+    },
+  });
+  mkdirSync(join(spec.cwd, ".claude"));
+  writeFileSync(
+    join(spec.cwd, ".claude", "settings.json"),
+    JSON.stringify({
+      permissions: {
+        allow: ["Bash(npm run test:*)", "WebFetch(domain:example.com)", "Edit"],
+      },
+    }),
+  );
+  const { replay } = await run(spec, { fixture: "completed" });
+  const argv = replay.argv()[0] ?? [];
+  expect(
+    argv.slice(
+      argv.indexOf("--disallowedTools") + 1,
+      argv.indexOf("--setting-sources"),
+    ),
+  ).toEqual([...alwaysDenied, "Edit"]);
+});
+
+test("a repo without settings, or with unreadable ones, adds no deny entries", async () => {
+  for (const settings of [undefined, "{ not json", '{"permissions":{}}']) {
+    const spec = coderSpec(tempDir());
+    if (settings !== undefined) {
+      mkdirSync(join(spec.cwd, ".claude"));
+      writeFileSync(join(spec.cwd, ".claude", "settings.json"), settings);
+    }
+    const { replay } = await run(spec, { fixture: "completed" });
+    const argv = replay.argv()[0] ?? [];
+    expect(
+      argv.slice(
+        argv.indexOf("--disallowedTools") + 1,
+        argv.indexOf("--setting-sources"),
+      ),
+    ).toEqual([...alwaysDenied, ...networkTools]);
+  }
 });
 
 test("a resumed, read-only Run with an output schema and network allowed", async () => {
@@ -371,6 +458,37 @@ test("stop() kills a process that ignores SIGTERM after the grace period", async
     detail: "claude was killed by SIGKILL.",
   });
 });
+
+test("stop() kills a tool process that outlives claude once the grace period ends", async () => {
+  const replay = replayStub(tempDir(), {
+    fixture: "crashed",
+    hold: true,
+    orphan: true,
+  });
+  const handle = claudeCodeAdapter({
+    binary: replay.binary,
+    stopGraceMs: 200,
+  }).start(coderSpec(tempDir()));
+  for await (const event of handle.events) if (event.type === "output") break;
+  const tool = replay.orphanPid();
+  cleanups.push(() => {
+    try {
+      process.kill(tool, "SIGKILL");
+    } catch {}
+  });
+  await handle.stop();
+  expect(alive(tool)).toBe(false);
+});
+
+/** Whether a process exists, a zombie not yet reaped included. */
+function alive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 test("a usage-limit signal is rate-limited, with resetAt when the CLI gives one", async () => {
   const { events, result } = await run(coderSpec(tempDir()), {

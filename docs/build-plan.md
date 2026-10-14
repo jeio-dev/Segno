@@ -309,7 +309,9 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 - The rate-limited fixtures are derived from the failed recording, since a usage limit can't be hit on demand (`tests/fixtures/README.md`). `pnpm test:live` re-records every fixture through the Adapter's transcript tee.
 - Every agent Run's `systemPrompt` is empty, so `prompt.md` holds the whole context. The Reviewer gets the Verdict schema as its `outputSchema`, and the diff range is the merge-base with the Phase branch. Only a Verdict that matches the schema is recorded; until B6 repairs malformed ones, the Task stays in `reviewing`. The Docs task's range starts at the Phase's base commit.
 - A probe Run has no tools: the Adapter passes `--tools ""` for `kind: probe` [ADR-0054].
-- The always-denied git operations are prefix rules in Claude Code, so under the onboarding profile's unrestricted shell they're best effort [ADR-0055]. B5 adds the probe's context (`probeSpec`); B8 starts probe Runs.
+- The always-denied git operations are prefix rules in Claude Code, so under the onboarding profile's unrestricted shell they're best effort [ADR-0055].
+- Runs keep `--setting-sources project` so Claude Code reads the repo's `CLAUDE.md`. The repo's `.claude/settings.json` allow rules come with it, so the Adapter denies every one the Run doesn't already allow [ADR-0056].
+- `stop()` keeps its SIGKILL escalation until the Run's whole process group has gone, so a tool process that ignores SIGTERM can't outlive claude. B5 adds the probe's context (`probeSpec`); B8 starts probe Runs.
 - The CLI enforces one object schema, so the onboarding output schema it gets puts both kinds in one object. The Engine then validates against the strict `proposal | unable` union.
 - `onboarding.proposed` records the proposal as a whole `segno.config.json`: the agent's values, the pending models, `coderAllow` as `roles.coder.allow`, the reasons' pointers moved to match, and the `ref` and `sha` the checks ran on. **Confirm** sends `proposal.config`, and **Edit** prefills the manual form with it.
 - An onboarding Run that ends `failed` is recorded with its own outcome, and `onboarding.failed { reason: crashed }` with the CLI's message. A rate-limited one records only `run.finished { rate-limited }` and returns onboarding to `idle`, until B8 pauses and reruns it. Timeouts and `hung` are B6.
@@ -320,7 +322,7 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 - No existing Event's shape changed. `onboarding.started`, `onboarding.proposed`, `onboarding.failed` and `onboarding.stopped` are new Event types. State gains `onboarding`, and Awaiting-you items gain the `onboarding-review` kind with a `runId`.
 - The replay stub now installs its SIGTERM handler before printing, and `expect.poll` waits up to 10 s, since whole Task flows on real git can take longer than the 1 s default under a full parallel run.
 
-**Verification:** `pnpm check:b5` passes on Node 24.21.0: 235 Vitest tests (20 at S5, 14 new at S6), the B2 exit scenario, and 14 S9 journeys against the built app (3 new). Code review is complete, and its findings are fixed, recorded as ADR-0055, or deferred: a claude process that outlives a crashed host is B8's restart recovery. The live check, `pnpm check:b5:live`, is the developer's to run.
+**Verification:** `pnpm check:b5` passes on Node 24.21.0: 239 Vitest tests (24 at S5, 14 new at S6), the B2 exit scenario, and 14 S9 journeys against the built app (3 new). Code review is complete, and its findings are fixed, recorded as ADR-0055 and ADR-0056, or deferred: a claude process that outlives a crashed host is B8's restart recovery. The live check, `pnpm check:b5:live`, is the developer's to run.
 
 ## B6: Failure paths
 

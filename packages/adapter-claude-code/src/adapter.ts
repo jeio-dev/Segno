@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { setTimeout as sleep } from "node:timers/promises";
 import type {
   AgentAdapter,
   RunEvent,
@@ -57,13 +59,17 @@ export function claudeCodeAdapter({
       });
       let stderr = "";
       let exited = false;
-      const child = spawn(binary, argvFor(spec, sessionId), {
-        cwd: spec.cwd,
-        env: { ...process.env, ...spec.env },
-        stdio: ["ignore", "pipe", "pipe"],
-        // Its own process group, so stop() also ends the tools it started.
-        detached: true,
-      });
+      const child = spawn(
+        binary,
+        argvFor(spec, sessionId, repoGrants(spec.cwd)),
+        {
+          cwd: spec.cwd,
+          env: { ...process.env, ...spec.env },
+          stdio: ["ignore", "pipe", "pipe"],
+          // Its own process group, so stop() also ends the tools it started.
+          detached: true,
+        },
+      );
       child.stdout.on("data", (chunk: Buffer) => {
         // The raw CLI output, exactly as printed [ADR-0033].
         transcript.write(chunk);
@@ -92,13 +98,18 @@ export function claudeCodeAdapter({
         result,
         stop() {
           stopping ??= (async () => {
-            if (exited) return;
-            signalGroup(child.pid, "SIGTERM");
+            const pid = child.pid;
+            if (pid === undefined || (exited && !groupAlive(pid))) return;
+            signalGroup(pid, "SIGTERM");
             const timer = setTimeout(
-              () => signalGroup(child.pid, "SIGKILL"),
+              () => signalGroup(pid, "SIGKILL"),
               stopGraceMs,
             );
             await result;
+            // Tools claude started can outlive it, so the escalation stands
+            // until the whole group has gone (or is past saving).
+            const giveUp = Date.now() + stopGraceMs + 5_000;
+            while (groupAlive(pid) && Date.now() < giveUp) await sleep(25);
             clearTimeout(timer);
           })();
           return stopping;
@@ -106,6 +117,32 @@ export function claudeCodeAdapter({
       };
     },
   } satisfies AgentAdapter;
+}
+
+/** Whether any process of the Run's group is left. */
+function groupAlive(pid: number) {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The allow rules in the repo's `.claude/settings.json`, if it has any. */
+function repoGrants(cwd: string): string[] {
+  try {
+    const settings = JSON.parse(
+      readFileSync(join(cwd, ".claude", "settings.json"), "utf8"),
+    );
+    const allow = settings?.permissions?.allow;
+    return Array.isArray(allow)
+      ? allow.filter((entry): entry is string => typeof entry === "string")
+      : [];
+  } catch {
+    // Claude Code can't load settings it can't read either.
+    return [];
+  }
 }
 
 function signalGroup(pid: number | undefined, signal: NodeJS.Signals) {

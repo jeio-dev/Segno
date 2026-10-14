@@ -65,6 +65,11 @@ export interface StubOptions {
   hold?: boolean;
   /** Ignore SIGTERM while holding, so only SIGKILL ends it. */
   ignoreTerm?: boolean;
+  /**
+   * Start a tool process in the stub's process group that ignores SIGTERM
+   * and holds none of its pipes, then exit on SIGTERM as claude does.
+   */
+  orphan?: boolean;
   /** Printed for `--version`. */
   version?: string;
   /** Edits the fixture's messages, for a case no recording shows. */
@@ -95,6 +100,8 @@ export function replayStub(dir: string, options: StubOptions = {}) {
     signal: "signal" in options ? options.signal : recorded?.signal,
     hold: options.hold ?? false,
     ignoreTerm: options.ignoreTerm ?? false,
+    orphan: options.orphan ?? false,
+    orphanPidPath: join(dir, "orphan.pid"),
     version: options.version ?? `${manifest.recordedWith} (Claude Code)`,
     argvPath: join(dir, "argv.jsonl"),
     envPath: join(dir, "env.json"),
@@ -105,7 +112,8 @@ export function replayStub(dir: string, options: StubOptions = {}) {
   writeFileSync(
     binary,
     `#!/usr/bin/env node
-import { appendFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 const config = ${JSON.stringify(config)};
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
@@ -117,6 +125,22 @@ writeFileSync(config.envPath, JSON.stringify(process.env));
 writeFileSync(config.cwdPath, process.cwd());
 const at = (flag) => { const i = args.indexOf(flag); return i < 0 ? undefined : args[i + 1]; };
 const session = at("--session-id") ?? at("--resume") ?? "none";
+if (config.orphan) {
+  // The tool writes its pid once it ignores SIGTERM; the stub waits for that.
+  spawn(
+    process.execPath,
+    [
+      "-e",
+      "process.on('SIGTERM', () => {});" +
+        "require('node:fs').writeFileSync(process.argv[1], String(process.pid));" +
+        "setInterval(() => {}, 1000);",
+      config.orphanPidPath,
+    ],
+    { stdio: "ignore" },
+  );
+  while (!existsSync(config.orphanPidPath))
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+}
 // Installed before any output, so a stop() that follows the output finds it.
 if (config.hold)
   process.on("SIGTERM", () => { if (!config.ignoreTerm) process.exit(143); });
@@ -149,6 +173,10 @@ else process.stdout.write("", end);
     },
     cwd() {
       return readFileSync(config.cwdPath, "utf8");
+    },
+    /** The pid of the tool process `orphan` started. */
+    orphanPid() {
+      return Number(readFileSync(config.orphanPidPath, "utf8"));
     },
   };
 }

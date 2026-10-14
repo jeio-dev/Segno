@@ -132,7 +132,7 @@ They're enforced by the agent CLI's prefix-matching permission rules, which hold
 
 Network access (web fetch and search tools, `curl`, `wget`) is denied unless the Role's `allow` adds it [ADR-0004] [ADR-0025]. Config can only *add* entries. It can never remove an always-denied entry or turn on any bypass mode [ADR-0004].
 
-The developer's personal agent settings never contribute permissions to a Run [ADR-0004].
+The developer's personal agent settings never contribute permissions to a Run, and the repo's own `.claude/settings.json` grants are denied unless the profile already allows them [ADR-0004] [ADR-0056].
 
 ## Claude Code Adapter (v1)
 
@@ -147,7 +147,8 @@ It maps a `RunSpec` onto `claude -p` (verified against Claude Code 2.1.299) [ADR
 | new session | `--session-id <uuid>` (the `sessionId` reported in `started`) |
 | `resumeSessionId` | `--resume <id>` |
 | permissions | `--permission-mode dontAsk --permission-prompts none`, plus `--allowedTools` (profile and `extraAllow`) and `--disallowedTools` (the always-denied set, plus network tools unless allowed) |
-| settings isolation | `--setting-sources project`, so user and local settings are not loaded [ADR-0004] |
+| settings isolation | `--setting-sources project`, so user and local settings are not loaded and the repo's `CLAUDE.md` is [ADR-0004] [ADR-0024] |
+| the repo's permission grants | every `permissions.allow` entry in the repo's `.claude/settings.json` that the Run doesn't already allow, exactly or by its bare tool name, is added to `--disallowedTools` [ADR-0056] |
 | `mcp: false` | `--strict-mcp-config` with no `--mcp-config` |
 | `outputSchema` | `--json-schema <schema>` |
 | `kind: probe` | `--tools ""`: no tools at all, whatever the profile allows [ADR-0054] |
