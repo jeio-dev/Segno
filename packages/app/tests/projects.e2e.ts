@@ -26,6 +26,15 @@ test("adding a repo without a config writes the reviewed settings uncommitted an
   expect(await page.getByLabel("Coder allow").inputValue()).toBe(
     "Bash(pnpm *)",
   );
+  const add = page.getByRole("button", { name: "Add", exact: true });
+  for (const required of ["Base branch", "Coder model", "Reviewer model"]) {
+    const field = page.getByLabel(required);
+    const value = await field.inputValue();
+    await field.fill(" ");
+    expect(await add.isDisabled()).toBe(true);
+    await field.fill(value);
+  }
+  expect(await add.isDisabled()).toBe(false);
   await page.getByLabel("Reviewer model").fill("sonnet");
   await page.getByRole("button", { name: "Add", exact: true }).click();
 

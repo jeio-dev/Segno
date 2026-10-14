@@ -61,8 +61,11 @@ export class AppStore {
         });
     });
     bridge.onHostStatus((status) => {
-      // A new port follows "connected"; until then the old client is gone.
-      if (status !== "connected") this.update({ status });
+      // A new port follows "connected". Until then the old host is gone, so
+      // its client is closed and anything waiting on it fails visibly.
+      if (status === "connected") return;
+      this.snapshot.client?.close();
+      this.update({ status });
     });
     bridge.connect();
   }

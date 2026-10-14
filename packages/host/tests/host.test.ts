@@ -993,3 +993,13 @@ test("an unreadable registry is logged and answered internal without overwriting
     "projects.json",
   );
 });
+
+test("a closed client rejects waiting and later calls instead of hanging", async () => {
+  const client = hostAt();
+  const waiting = client.projects.list();
+  client.close();
+  await expect(waiting).rejects.toMatchObject({ code: "internal" });
+  await expect(client.settings.get()).rejects.toMatchObject({
+    code: "internal",
+  });
+});

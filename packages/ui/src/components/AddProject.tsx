@@ -199,7 +199,7 @@ function Proposal({
           type="button"
           className="button button-primary"
           onClick={() => void add()}
-          disabled={busy || (detected !== undefined && !draft.tests.trim())}
+          disabled={busy || (detected !== undefined && !complete(draft))}
         >
           Add
         </button>
@@ -249,6 +249,13 @@ function draftFrom(config: SegnoConfig | undefined): Draft {
     reviewer: config?.roles.reviewer.model ?? "",
     allow: config?.roles.coder.allow?.join("\n") ?? "",
   };
+}
+
+/** Every field segno.config.json requires is filled in. */
+function complete(draft: Draft) {
+  return [draft.baseBranch, draft.tests, draft.coder, draft.reviewer].every(
+    (value) => value.trim(),
+  );
 }
 
 /** The reviewed settings; blank optional fields are left out. */
