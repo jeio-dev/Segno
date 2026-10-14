@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
 
 /** A git operation that failed without a conflict: an infra failure [ADR-0029]. */
@@ -15,28 +15,64 @@ export class GitError extends Error {
 
 /** Runs git non-interactively in `cwd`; rejects with a GitError on failure. */
 export function git(cwd: string, ...args: string[]): Promise<string> {
+  return runGit(cwd, args);
+}
+
+function runGit(
+  cwd: string,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      args,
-      {
-        cwd,
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-      },
-      (error, stdout, stderr) => {
-        if (error)
-          reject(
-            new GitError(
-              args,
-              stderr || error.message,
-              typeof error.code === "number" ? error.code : undefined,
-            ),
-          );
-        else resolve(stdout.trimEnd());
-      },
-    );
+    if (signal?.aborted) {
+      reject(new Error("Git operation stopped"));
+      return;
+    }
+    const child = spawn("git", args, {
+      cwd,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+    let stdout = "";
+    let stderr = "";
+    let failure: string | undefined;
+    const abort = () => {
+      if (child.pid)
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {}
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    child.stdout.setEncoding("utf8").on("data", (text: string) => {
+      stdout += text;
+      if (stdout.length > 64 * 1024 * 1024) {
+        failure = "Git output exceeded 64 MiB";
+        abort();
+      }
+    });
+    child.stderr.setEncoding("utf8").on("data", (text: string) => {
+      stderr += text;
+      if (stderr.length > 64 * 1024 * 1024) {
+        failure = "Git output exceeded 64 MiB";
+        abort();
+      }
+    });
+    child.once("error", (error) => {
+      failure = error.message;
+    });
+    child.once("close", (code, killedBy) => {
+      signal?.removeEventListener("abort", abort);
+      if (failure || code !== 0 || signal?.aborted)
+        reject(
+          new GitError(
+            args,
+            failure ?? (stderr || `Git ended with ${killedBy ?? code}`),
+            code ?? undefined,
+          ),
+        );
+      else resolve(stdout.trimEnd());
+    });
   });
 }
 
@@ -97,15 +133,16 @@ export async function removeScratchWorktree(repo: string, path: string) {
 }
 
 /** Commits a Segno-made commit with the developer's identity and trailer [ADR-0029]. */
-function commit(cwd: string, message: string, taskId: string) {
-  return git(
+function commit(
+  cwd: string,
+  message: string,
+  taskId: string,
+  signal?: AbortSignal,
+) {
+  return runGit(
     cwd,
-    "commit",
-    "--quiet",
-    "-m",
-    message,
-    "--trailer",
-    `Segno-Task: ${taskId}`,
+    ["commit", "--quiet", "-m", message, "--trailer", `Segno-Task: ${taskId}`],
+    signal,
   );
 }
 
@@ -115,7 +152,18 @@ export async function commitLeftovers(
   { message, taskId }: { message: string; taskId: string },
 ) {
   await git(worktree, "add", "--all");
-  if (!(await git(worktree, "status", "--porcelain"))) return undefined;
+  if (!(await git(worktree, "status", "--porcelain"))) {
+    const merging = await git(
+      worktree,
+      "rev-parse",
+      "--verify",
+      "MERGE_HEAD",
+    ).then(
+      () => true,
+      () => false,
+    );
+    if (!merging) return undefined;
+  }
   await commit(worktree, message, taskId);
   return git(worktree, "rev-parse", "HEAD");
 }
@@ -143,34 +191,45 @@ export async function mergePhaseInto(
     taskId,
     message,
   }: { phase: string; taskId: string; message: string },
+  signal?: AbortSignal,
 ): Promise<MergeResult> {
-  const before = await git(worktree, "rev-parse", "HEAD");
-  if (await isAncestor(worktree, phase, before)) return { kind: "up-to-date" };
+  const run = (...args: string[]) => runGit(worktree, args, signal);
+  const before = await run("rev-parse", "HEAD");
+  if (await isAncestor(worktree, phase, before, signal))
+    return { kind: "up-to-date" };
   try {
-    await git(worktree, "merge", "--quiet", "--no-ff", "--no-commit", phase);
+    const pending = await run("rev-parse", "--verify", "MERGE_HEAD").then(
+      () => true,
+      () => false,
+    );
+    if (!pending)
+      await run("merge", "--quiet", "--no-ff", "--no-commit", phase);
   } catch (error) {
-    const files = (
-      await git(worktree, "diff", "--name-only", "--diff-filter=U")
-    )
+    const files = (await run("diff", "--name-only", "--diff-filter=U"))
       .split("\n")
       .filter(Boolean);
     if (files.length) return { kind: "conflict", files };
     throw error;
   }
-  await commit(worktree, message, taskId);
-  const changed = await git(worktree, "diff", "--name-only", before, "HEAD");
+  await commit(worktree, message, taskId, signal);
+  const changed = await run("diff", "--name-only", before, "HEAD");
   return {
     kind: "merged",
-    sha: await git(worktree, "rev-parse", "HEAD"),
+    sha: await run("rev-parse", "HEAD"),
     lockfileChanged: changed
       .split("\n")
       .some((file) => lockfiles.has(file.split("/").at(-1) ?? "")),
   };
 }
 
-async function isAncestor(cwd: string, ancestor: string, of: string) {
+async function isAncestor(
+  cwd: string,
+  ancestor: string,
+  of: string,
+  signal?: AbortSignal,
+) {
   try {
-    await git(cwd, "merge-base", "--is-ancestor", ancestor, of);
+    await runGit(cwd, ["merge-base", "--is-ancestor", ancestor, of], signal);
     return true;
   } catch (error) {
     // Exit code 1 means "not an ancestor"; anything else is a real failure.

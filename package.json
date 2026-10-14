@@ -19,6 +19,7 @@
     "check:b3.1": "pnpm check:b3",
     "check:b4": "pnpm check:b3.1",
     "check:b5": "pnpm check:b4",
+    "check:b6": "pnpm check:b5",
     "test:live": "pnpm build && vitest run --config vitest.live.config.ts packages/adapter-claude-code && vitest run --project adapter-claude-code",
     "check:b5:live": "pnpm test:live && vitest run --config vitest.live.config.ts packages/host",
     "dev": "pnpm build && pnpm --filter @segno/app dev"

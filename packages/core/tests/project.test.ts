@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { type Event, project } from "../src/index.js";
+import { boardOf, type Event, project } from "../src/index.js";
 
 const definition = {
   schemaVersion: 1 as const,
@@ -137,4 +137,93 @@ test("editing projected State cannot change the Events used by later replay", ()
   task.title = "Changed in the client";
   task.acceptance.push("Client-only criterion");
   expect(project(events).plans[0]?.definition).toEqual(definition);
+});
+
+test("replay keeps malformed review errors and raised risk for the board and Review tab", () => {
+  const meta = { v: 1 as const, ts: "2026-10-14T20:00:00.000Z" };
+  const events: Event[] = [
+    submitted,
+    { ...meta, seq: 2, type: "plan.approved", payload: { planId: "plan-1" } },
+    {
+      ...meta,
+      seq: 3,
+      type: "phase.started",
+      payload: {
+        phaseId: "index",
+        branch: "segno/search-notes/index",
+        baseSha: "base",
+        docsTask: {
+          id: "index-docs",
+          title: "Docs",
+          description: "Write docs",
+          acceptance: ["Docs updated"],
+          dependsOn: ["index-notes"],
+        },
+      },
+    },
+    {
+      ...meta,
+      seq: 4,
+      type: "verdict.malformed",
+      payload: {
+        taskId: "index-notes",
+        runId: "r",
+        errors: ["Missing criterion 0"],
+        raw: "{}",
+      },
+    },
+    {
+      ...meta,
+      seq: 5,
+      type: "task.riskRaised",
+      payload: {
+        taskId: "index-notes",
+        flags: ["security"],
+        reason: "Permissions changed",
+        byRunId: "r",
+      },
+    },
+    {
+      ...meta,
+      seq: 6,
+      type: "task.budgetUsed",
+      payload: { taskId: "index-notes", budget: "infra", count: 3 },
+    },
+    {
+      ...meta,
+      seq: 7,
+      type: "task.transitioned",
+      payload: {
+        taskId: "index-notes",
+        from: "reviewing",
+        to: "blocked",
+        cause: "infra-exhausted",
+        blockReason: "verdict-invalid",
+      },
+    },
+  ];
+  const state = project(events);
+  expect(state.tasks[0]).toMatchObject({
+    malformedVerdicts: [
+      { seq: 4, runId: "r", errors: ["Missing criterion 0"], raw: "{}" },
+    ],
+  });
+  expect(boardOf(state, { concurrency: 1 }).tasks).toMatchObject([
+    {
+      id: "index-notes",
+      state: "blocked",
+      blockReason: "verdict-invalid",
+      budgets: { review: 0, test: 0, infra: 3 },
+      highRisk: true,
+      risk: [{ flag: "security", reason: "Permissions changed" }],
+    },
+    {
+      id: "index-docs",
+      state: "waiting",
+      waitReason: "waiting on blocked index-notes",
+    },
+  ]);
+  expect(state.awaiting).toMatchObject([
+    { id: 7, kind: "blocked", taskId: "index-notes" },
+  ]);
 });

@@ -33,11 +33,11 @@ const config = {
 };
 
 /** Adds a configured repo, then submits and approves the Plan. */
-async function approvedPlan() {
+async function approvedPlan(planYaml = plan, projectConfig = config) {
   const launched = await launch();
   const { app, page } = launched;
   const repo = repoWithRemote({
-    "segno.config.json": `${JSON.stringify(config)}\n`,
+    "segno.config.json": `${JSON.stringify(projectConfig)}\n`,
   });
   await stubDialog(app, "showOpenDialog", {
     canceled: false,
@@ -47,7 +47,7 @@ async function approvedPlan() {
   await page.getByRole("button", { name: "Choose folder…" }).click();
   await page.getByRole("button", { name: "Add", exact: true }).click();
   const file = join(tempDir(), "search.yaml");
-  writeFileSync(file, plan);
+  writeFileSync(file, planYaml);
   await stubDialog(app, "showOpenDialog", {
     canceled: false,
     filePaths: [file],
@@ -84,4 +84,64 @@ test("the drawer's Transcript tab streams a live Run", async () => {
   await panel.getByText("live", { exact: true }).first().waitFor();
   await panel.getByText("Writing a.txt").first().waitFor();
   await panel.getByText("completed", { exact: true }).first().waitFor();
+});
+
+test("a held Task is approved from Awaiting you and reaches Done", async () => {
+  const { page } = await approvedPlan(
+    plan.replace(
+      "        acceptance: [Notes are indexed]",
+      "        acceptance: [Notes are indexed]\n        risk: { flags: [security], reason: Sensitive }",
+    ),
+  );
+  const awaiting = page.getByRole("complementary", { name: "Awaiting you" });
+  await awaiting
+    .getByText("merge-hold", { exact: true })
+    .waitFor({ timeout: 45_000 });
+  await awaiting.getByRole("button", { name: "Approve", exact: true }).click();
+  await page
+    .getByRole("list", { name: "Done" })
+    .getByRole("button", { name: /^a / })
+    .waitFor({ timeout: 45_000 });
+});
+
+test("a Blocked card shows its Block reason, budgets and dependent wait reason", async () => {
+  const { page } = await approvedPlan(plan, {
+    ...config,
+    tests: { command: "echo broken; exit 1" },
+  });
+  const card = page
+    .getByRole("list", { name: "Blocked" })
+    .getByRole("button", { name: /^a / });
+  await card.waitFor({ timeout: 45_000 });
+  await card.getByText("test-limit", { exact: true }).waitFor();
+  await card.getByText("T 2/2", { exact: true }).waitFor();
+  await page
+    .getByRole("list", { name: "Queued" })
+    .getByText("waiting on blocked a", { exact: true })
+    .first()
+    .waitFor();
+});
+
+test("the Review tab shows the Verdict and Send back sends a blocking developer Finding", async () => {
+  const { page } = await approvedPlan(
+    plan.replace(
+      "        acceptance: [Notes are indexed]",
+      "        acceptance: [Notes are indexed]\n        risk: { flags: [security], reason: Sensitive }",
+    ),
+  );
+  const card = page
+    .getByRole("list", { name: "Merge" })
+    .getByRole("button", { name: /^a / });
+  await card.waitFor({ timeout: 45_000 });
+  await card.getByText("High risk: security").waitFor();
+  await card.click();
+  const drawer = page.getByRole("complementary", { name: "Task a" });
+  await drawer.getByRole("tab", { name: "Review", exact: true }).click();
+  await drawer.getByText("Meets every acceptance criterion.").waitFor();
+  await drawer.getByText("Met: Notes are indexed").waitFor();
+  await drawer.getByRole("button", { name: "Send back", exact: true }).click();
+  await drawer.getByLabel("Send back notes").fill("Protect private notes");
+  await drawer.getByRole("button", { name: "Send notes", exact: true }).click();
+  await drawer.getByText("Protect private notes", { exact: true }).waitFor();
+  await drawer.getByText("developer · blocking", { exact: true }).waitFor();
 });

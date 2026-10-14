@@ -125,6 +125,7 @@ export interface BoardTask {
   /** Why a queued Task isn't moving, e.g. `needs a` or `slots full`. */
   waitReason?: string;
   highRisk: boolean;
+  risk: { flag: string; reason: string }[];
   /** The Task's live Run. */
   run?: { id: string; kind: RunKind; role: string };
   /** Merging, but behind another Task in the merge queue. */

@@ -116,6 +116,8 @@ export function openEngine({
     workspace &&
     openWork({
       ...workspace,
+      now: () => clock.now(),
+      setTimer,
       readState: () => project(log.readEvents()),
       emit,
       // A Run outcome is processed, then the Plan moves on from it.
@@ -134,6 +136,8 @@ export function openEngine({
     configStore &&
     onboardingContext &&
     openOnboarding({
+      now: () => clock.now(),
+      setTimer,
       repo: workspace.repo,
       projectDir: workspace.projectDir,
       adapters: workspace.adapters,
@@ -214,11 +218,13 @@ export function openEngine({
     close(): Promise<void> {
       closed = true;
       cancelStartRetry?.();
+      work?.close();
       // The last queued input may start a Run, so live Runs are stopped after
       // the queue drains. Recording them as interrupted is B8.
       closing ??= tail
         .then(() => Promise.all([...live.values()].map((run) => run.stop())))
         .then(() => {
+          work?.close();
           log.close();
         });
       return closing;
@@ -396,7 +402,7 @@ export function openEngine({
     ) {
       throw new BadRequestError();
     }
-    if (input.type === "plan.sendBack") {
+    if (input.type === "plan.sendBack" || input.type === "task.sendBack") {
       const notes = "notes" in input ? input.notes : undefined;
       if (notes === undefined || (typeof notes === "string" && !notes.trim())) {
         return {
@@ -493,6 +499,48 @@ export function openEngine({
       });
       await configStore.reload();
       return { ok: true, events: [seq] };
+    }
+    if (command.type === "task.approve" || command.type === "task.sendBack") {
+      const task = state.tasks.findLast(({ id }) => id === command.taskId);
+      if (!task)
+        return {
+          ok: false,
+          code: "not-found",
+          message: `Unknown Task ${command.taskId}.`,
+        };
+      if (task.state !== "held")
+        return {
+          ok: false,
+          code: "invalid-transition",
+          message: `${command.type} requires a held Task.`,
+        };
+      const drafts: Draft[] = [];
+      if (command.type === "task.sendBack")
+        drafts.push({
+          type: "task.findingAdded",
+          payload: {
+            taskId: task.id,
+            finding: {
+              id: randomUUID(),
+              source: "developer",
+              severity: "blocking",
+              body: command.notes,
+            },
+          },
+        });
+      drafts.push({
+        type: "task.transitioned",
+        payload: {
+          taskId: task.id,
+          from: "held",
+          to: command.type === "task.approve" ? "merging" : "coding",
+          cause:
+            command.type === "task.approve"
+              ? "developer-approved"
+              : "developer-sent-back",
+        },
+      });
+      return { ok: true, events: emit(drafts, task.planId) };
     }
     if (command.type !== "plan.submit") {
       const plan = state.plans.find(({ id }) => id === command.planId);

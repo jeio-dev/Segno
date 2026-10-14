@@ -34,6 +34,7 @@ export function ProjectView({
   state: State | undefined;
 }) {
   const [config, setConfig] = useState<ConfigStatus>();
+  const [selected, setSelected] = useState<string>();
   const [reviewing, setReviewing] = useState<AwaitingItem>();
 
   const readConfig = useCallback(() => {
@@ -66,8 +67,12 @@ export function ProjectView({
         state={state}
         config={config}
         onReview={setReviewing}
+        selected={selected}
+        onSelect={setSelected}
       />
       <AwaitingPanel
+        client={client}
+        projectId={project.id}
         items={state?.awaiting}
         onReview={(item) => {
           // The proposal's review is on the not-onboarded board itself.
@@ -75,6 +80,7 @@ export function ProjectView({
             document
               .getElementById(onboardingReviewId)
               ?.scrollIntoView({ behavior: "smooth" });
+          else if (item.taskId) setSelected(item.taskId);
           else setReviewing(item);
         }}
       />
@@ -98,6 +104,8 @@ function Board({
   state,
   config,
   onReview,
+  selected,
+  onSelect,
 }: {
   store: AppStore;
   client: HostClient;
@@ -105,6 +113,8 @@ function Board({
   state: State | undefined;
   config: ConfigStatus | undefined;
   onReview(item: AwaitingItem): void;
+  selected: string | undefined;
+  onSelect(taskId: string | undefined): void;
 }) {
   const active = state?.plans.find((plan) => plan.state === "active");
   const awaitingItem = state?.awaiting.find(
@@ -126,7 +136,6 @@ function Board({
     [state],
   );
   const usage = useUsage(client, project.id, state?.lastSeq);
-  const [selected, setSelected] = useState<string>();
   const selectedTask = state?.tasks.find(
     ({ id, planId }) => id === selected && planId === active?.id,
   );
@@ -197,7 +206,7 @@ function Board({
               board={board}
               doneOrder={doneOrder}
               selected={selectedTask?.id}
-              onSelect={setSelected}
+              onSelect={onSelect}
             />
           ) : (
             <p className="muted">
@@ -230,7 +239,7 @@ function Board({
           task={selectedTask}
           card={board?.tasks.find(({ id }) => id === selectedTask.id)}
           runs={state.runs.filter(({ taskId }) => taskId === selectedTask.id)}
-          onClose={() => setSelected(undefined)}
+          onClose={() => onSelect(undefined)}
         />
       )}
     </section>
