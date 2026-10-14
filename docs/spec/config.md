@@ -63,6 +63,7 @@ The review (2), test (2) and infra (3) caps are **not** configurable, and there 
 }
 ```
 
+- **Missing pending config.** When a not-onboarded Project has no `pending.json`, create it with the Add defaults: Planner `opus`, Coder `sonnet`, Reviewer `opus`, and Docs `haiku`. An existing pending config is validated, not replaced [ADR-0050].
 - **Every key is required,** and each value is a non-empty string. Validation is the same as for the other files.
 - **Its models go into the config.** `onboarding.confirm` writes them into `segno.config.json` as `roles.<role>.model` and `roles.coder.docsModel`, with `adapter: "claude-code"`. They become the team's committed models.
 - **The onboarding Run** uses its Planner model, overridden by `local.json` as usual.
@@ -108,7 +109,7 @@ Only `roles.<role>.model` may override a committed key. Any other committed key 
 ## Validation
 
 - **Every file is validated strictly** against a zod schema, and an equivalent JSON Schema of `segno.config.json` is published. Unknown keys and out-of-range values are errors [ADR-0025].
-- **Every error is reported** as `{ file, path, line?, column?, code, message }`, where `file` is `segno.config.json` or `local.json`, `path` is a JSON pointer, and line and column come from the JSON source when one is available [ADR-0047]:
+- **Every error is reported** as `{ file, path, line?, column?, code, message }`, where `file` is `segno.config.json`, `local.json` or `pending.json`, `path` is a JSON pointer, and line and column come from the JSON source when one is available [ADR-0047]:
 
 | `code` | Meaning |
 |---|---|

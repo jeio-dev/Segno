@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
   type CommandResult,
+  type ConfigError,
   commandSchema,
   type Event,
   laterCommandTypes,
   project,
+  type SegnoConfig,
 } from "@segno/core";
 import { parsePlan } from "@segno/plan-format";
 import { openEventLog } from "./event-log.js";
@@ -12,9 +14,19 @@ import { openEventLog } from "./event-log.js";
 export interface Clock {
   now(): Date;
 }
+export interface ConfigStore {
+  prepareOnboarding(
+    config: unknown,
+  ): Promise<{ config?: SegnoConfig; errors: ConfigError[] }>;
+  writeOnboarding(config: SegnoConfig): Promise<void>;
+  discardPending(): Promise<void>;
+  reload(): Promise<void>;
+}
 export interface EngineOptions {
   dbPath: string;
   clock?: Clock;
+  isOnboarded?: () => boolean;
+  configStore?: ConfigStore;
 }
 
 export class BadRequestError extends Error {
@@ -28,6 +40,8 @@ export class BadRequestError extends Error {
 export function openEngine({
   dbPath,
   clock = { now: () => new Date() },
+  isOnboarded = () => true,
+  configStore,
 }: EngineOptions) {
   const log = openEventLog(dbPath);
   try {
@@ -45,6 +59,28 @@ export function openEngine({
       return project(readEvents());
     },
     readEvents,
+    /** Startup reconciliation for a valid file, before the host exposes this Engine. */
+    async acceptConfigFile(wasNotOnboarded = false) {
+      if (!configStore || !isOnboarded()) return;
+      const events = readEvents();
+      await configStore.discardPending();
+      if (
+        !wasNotOnboarded &&
+        events.some(
+          (event) =>
+            event.type === "onboarding.confirmed" ||
+            event.type === "plan.submitted",
+        )
+      )
+        return;
+      append({
+        seq: (events.at(-1)?.seq ?? 0) + 1,
+        type: "onboarding.confirmed",
+        v: 1,
+        ts: clock.now().toISOString(),
+        payload: { via: "file" },
+      });
+    },
     /** Calls `listener` with every Event appended from now on, in seq order. */
     onAppend(listener: (event: Event) => void): () => void {
       listeners.add(listener);
@@ -52,9 +88,8 @@ export function openEngine({
     },
     handle(input: unknown): Promise<CommandResult> {
       if (closed) return Promise.reject(closedError());
-      // Every B2 Command field is scalar; capture it before the caller can edit it.
-      const received =
-        typeof input === "object" && input !== null ? { ...input } : input;
+      // Capture nested config values before the caller can edit a queued Command.
+      const received = structuredClone(input);
       const result = tail.then(() => processCommand(received));
       tail = result.then(
         () => {},
@@ -89,8 +124,18 @@ export function openEngine({
     return log.readEvents(since);
   }
 
-  function processCommand(input: unknown): CommandResult {
+  async function processCommand(input: unknown): Promise<CommandResult> {
     const type = (input as { type?: unknown } | null)?.type;
+    const recognized =
+      commandSchema.options.some(
+        (option) => option.shape.type.value === type,
+      ) || (laterCommandTypes as readonly unknown[]).includes(type);
+    if (recognized && type !== "onboarding.confirm" && !isOnboarded())
+      return {
+        ok: false,
+        code: "not-onboarded",
+        message: "Set up the Project before submitting or managing Plans.",
+      };
     if ((laterCommandTypes as readonly unknown[]).includes(type)) {
       return {
         ok: false,
@@ -157,6 +202,33 @@ export function openEngine({
     }
     const command = validated.data;
     const state = project(log.readEvents());
+    if (command.type === "onboarding.confirm") {
+      if (isOnboarded() || !configStore)
+        return {
+          ok: false,
+          code: "invalid-transition",
+          message: "The Project is already onboarded.",
+        };
+      const prepared = await configStore.prepareOnboarding(command.config);
+      if (!prepared.config || prepared.errors.length)
+        return {
+          ok: false,
+          code: "validation",
+          message: "The config is invalid.",
+          errors: prepared.errors,
+        };
+      await configStore.writeOnboarding(prepared.config);
+      const seq = state.lastSeq + 1;
+      append({
+        seq,
+        type: "onboarding.confirmed",
+        v: 1,
+        ts: clock.now().toISOString(),
+        payload: { via: "manual", config: prepared.config },
+      });
+      await configStore.reload();
+      return { ok: true, events: [seq] };
+    }
     if (command.type !== "plan.submit") {
       const plan = state.plans.find(({ id }) => id === command.planId);
       if (!plan) {

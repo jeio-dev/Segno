@@ -5,6 +5,9 @@ import type {
   ConfigError,
   ConfigSource,
   EffectiveConfig,
+  PendingConfig,
+  ProjectModels,
+  SegnoConfig,
 } from "./config.js";
 import type { Event, PhaseStatus, PlanStatus } from "./events.js";
 import type { AwaitingItem, PlanState } from "./project.js";
@@ -69,7 +72,7 @@ export type ProjectSummary = {
   name: string;
   path: string;
 } & (
-  | { status: "running"; awaitingCount: number }
+  | { status: "running" | "not-onboarded"; awaitingCount: number }
   | {
       status: "unavailable";
       awaitingCount: 0;
@@ -87,10 +90,11 @@ export type ProjectSummary = {
 export interface InspectResult {
   /** The repo's git top-level. */
   path: string;
-  source: "file" | "detected";
+  source: "file" | "models";
+  models?: ProjectModels;
   packageManager?: "pnpm" | "yarn" | "npm" | "bun";
   gh: "ok" | "missing" | "logged-out";
-  /** The file's parsed JSON (absent when unparseable), or the detected proposal. */
+  /** The existing file's parsed JSON, absent when unparseable. */
   config?: unknown;
   errors: ConfigError[];
 }
@@ -127,7 +131,8 @@ export interface ArchivedPhase {
 
 /** The config query: effective config, sources and status [ADR-0047]. */
 export interface ConfigStatus {
-  effective: EffectiveConfig;
+  effective: EffectiveConfig | null;
+  pending: PendingConfig | null;
   sources: Record<string, ConfigSource>;
   rejected: {
     seq: number;
@@ -148,6 +153,16 @@ export interface Queries {
   phases: { params: undefined; result: ArchivedPhase[] };
   phaseEvents: { params: { phaseId: string }; result: Event[] };
   config: { params: undefined; result: ConfigStatus };
+  onboarding: {
+    params: undefined;
+    result: {
+      state: "idle" | "done";
+      detected: {
+        config: SegnoConfig;
+        packageManager?: InspectResult["packageManager"];
+      };
+    };
+  };
 }
 export type QueryName = keyof Queries;
 const planParams = z.strictObject({ planId: z.string().min(1) });
@@ -160,6 +175,7 @@ export const queryParamsSchemas = {
   phases: z.undefined(),
   phaseEvents: z.strictObject({ phaseId: z.string().min(1) }),
   config: z.undefined(),
+  onboarding: z.undefined(),
 } satisfies Record<QueryName, z.ZodType>;
 
 /** Request and result types of every call. */
@@ -177,7 +193,7 @@ export interface HostCalls {
   "projects.list": { args: []; result: ProjectSummary[] };
   "projects.inspect": { args: [path: string]; result: InspectResult };
   "projects.add": {
-    args: [path: string, config?: unknown];
+    args: [path: string, models?: unknown];
     result: { id: string };
   };
   "projects.remove": {
@@ -310,10 +326,10 @@ export function createHostClient(port: HostPort) {
     projects: {
       list: () => call("projects.list"),
       inspect: (path: string) => call("projects.inspect", path),
-      add: (path: string, config?: unknown) =>
-        config === undefined
+      add: (path: string, models?: unknown) =>
+        models === undefined
           ? call("projects.add", path)
-          : call("projects.add", path, config),
+          : call("projects.add", path, models),
       remove: (id: string, options: { deleteData: boolean }) =>
         call("projects.remove", id, options),
       locate: (id: string, path: string) => call("projects.locate", id, path),

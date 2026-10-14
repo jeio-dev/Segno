@@ -1,8 +1,13 @@
 import { validationCodes } from "@segno/plan-format";
 import { z } from "zod";
+import { configErrorSchema } from "./config.js";
 
 const nonBlank = z.string().regex(/\S/, "Must contain non-whitespace text.");
 export const commandSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("onboarding.confirm"),
+    config: z.unknown(),
+  }),
   z.strictObject({
     type: z.literal("plan.submit"),
     yaml: z.string(),
@@ -34,6 +39,7 @@ export const laterCommandTypes = [
 ] as const;
 
 export const rejectionCodeSchema = z.enum([
+  "not-onboarded",
   "validation",
   "not-found",
   "invalid-transition",
@@ -57,7 +63,7 @@ export const rejectionSchema = z.discriminatedUnion("code", [
     ok: z.literal(false),
     code: z.literal("validation"),
     message: z.string(),
-    errors: z.array(validationErrorSchema),
+    errors: z.array(z.union([validationErrorSchema, configErrorSchema])),
   }),
   z.strictObject({
     ok: z.literal(false),

@@ -8,10 +8,12 @@ import type {
   State,
 } from "@segno/core";
 import { useCallback, useEffect, useState } from "react";
-import { errorMessage, formatPlanError } from "../format.js";
+import { errorMessage } from "../format.js";
 import type { AppStore } from "../store.js";
 import { AwaitingPanel } from "./AwaitingPanel.js";
+import { Onboarding } from "./Onboarding.js";
 import { PlanReview } from "./PlanReview.js";
+import { RejectionNotice } from "./RejectionNotice.js";
 
 type PlanErrors = Extract<CommandResult, { code: "validation" }>["errors"];
 
@@ -24,19 +26,23 @@ export function ProjectView({
 }: {
   store: AppStore;
   client: HostClient;
-  project: Extract<ProjectSummary, { status: "running" }>;
+  project: Exclude<ProjectSummary, { status: "unavailable" }>;
   state: State | undefined;
 }) {
   const [config, setConfig] = useState<ConfigStatus>();
   const [reviewing, setReviewing] = useState<AwaitingItem>();
 
   const readConfig = useCallback(() => {
+    if (project.status === "not-onboarded") {
+      setConfig(undefined);
+      return;
+    }
     // The commit hint is re-checked each time it's read [ADR-0039].
     client
       .query(project.id, "config")
       .then(setConfig)
       .catch(() => setConfig(undefined));
-  }, [client, project.id]);
+  }, [client, project.id, project.status]);
   useEffect(() => {
     readConfig();
     window.addEventListener("focus", readConfig);
@@ -114,7 +120,7 @@ function Board({
         )}
       </header>
       <div className="board-body">
-        {config && !config.committed && (
+        {config?.effective && !config.committed && (
           <div className="notice" role="status">
             <span className="badge badge-warn">hint</span>
             segno.config.json isn't on {config.effective.remote}/
@@ -122,7 +128,13 @@ function Board({
             shares it.
           </div>
         )}
-        {active ? (
+        {project.status === "not-onboarded" ? (
+          <Onboarding
+            client={client}
+            projectId={project.id}
+            onSaved={() => store.refreshProjects()}
+          />
+        ) : active ? (
           <p className="muted">
             The board shows the active Phase once it starts.
           </p>
@@ -225,32 +237,6 @@ function SubmitPlan({
       </button>
       {problem && <RejectionNotice {...problem} />}
     </section>
-  );
-}
-
-export function RejectionNotice({
-  message,
-  errors,
-}: {
-  message: string;
-  errors?: PlanErrors | undefined;
-}) {
-  return (
-    <div className="notice notice-start" role="alert">
-      <p>
-        <span className="badge badge-bad">rejected</span>
-        {message}
-      </p>
-      {errors && errors.length > 0 && (
-        <ul className="error-list">
-          {errors.map((error) => (
-            <li key={`${error.path}${error.code}${error.line}`}>
-              {formatPlanError(error)}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
   );
 }
 

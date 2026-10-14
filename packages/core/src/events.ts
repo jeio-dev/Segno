@@ -1,5 +1,5 @@
 import type { Plan, Risk, Task } from "@segno/plan-format";
-import type { ConfigError } from "./config.js";
+import type { ConfigError, SegnoConfig } from "./config.js";
 
 export type PlanStatus =
   | "awaiting-approval"
@@ -81,6 +81,10 @@ type ConfigSource = "file" | "local" | "command";
 
 /** All v1 Event payloads. Behavior beyond Plans is added in later build phases. */
 export interface EventPayloads {
+  "onboarding.confirmed": {
+    via: "manual" | "proposal" | "file";
+    config?: SegnoConfig;
+  };
   "plan.submitted": PlanId & {
     slug: string;
     plan: Plan;
@@ -168,6 +172,7 @@ export interface EventPayloads {
 
 /** Runtime catalog recognition; the first-release catalog freezes in B10. */
 export const eventVersions = {
+  "onboarding.confirmed": 1,
   "plan.submitted": 1,
   "plan.approved": 1,
   "plan.returned": 1,

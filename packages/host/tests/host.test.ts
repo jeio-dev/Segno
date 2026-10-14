@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -21,6 +22,8 @@ const twoPhase = readFileSync(
   new URL("../../../examples/two-phase.yaml", import.meta.url),
   "utf8",
 );
+
+const models = { planner: "opus", coder: "sonnet", reviewer: "opus" };
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -74,6 +77,262 @@ function hostAt(
   return client;
 }
 
+test("add keeps chosen models pending and leaves an unconfigured repo untouched", async () => {
+  const appData = tempDir();
+  const client = hostAt(appData);
+  const repo = repoWithRemote();
+  const { id } = await client.projects.add(repo, {
+    planner: "planner-custom",
+    coder: "coder-custom",
+    reviewer: "reviewer-custom",
+  });
+  expect(await client.projects.list()).toEqual([
+    {
+      id,
+      name: basename(repo),
+      path: repo,
+      status: "not-onboarded",
+      awaitingCount: 0,
+    },
+  ]);
+  const pending = {
+    roles: {
+      planner: { model: "planner-custom" },
+      coder: { model: "coder-custom", docsModel: "haiku" },
+      reviewer: { model: "reviewer-custom" },
+    },
+  };
+  expect(
+    JSON.parse(
+      readFileSync(join(appData, "projects", id, "pending.json"), "utf8"),
+    ),
+  ).toEqual(pending);
+  expect(await client.query(id, "config")).toEqual({
+    effective: null,
+    sources: {},
+    rejected: null,
+    committed: false,
+    pending,
+  });
+  expect(git(repo, "status", "--porcelain")).toBe("");
+  expect(existsSync(join(repo, "segno.config.json"))).toBe(false);
+});
+
+test("a not-onboarded Project rejects Plan submission without appending an Event", async () => {
+  const client = hostAt();
+  const { id } = await client.projects.add(repoWithRemote(), {
+    planner: "opus",
+    coder: "sonnet",
+    reviewer: "opus",
+  });
+  expect(
+    await client.command(id, { type: "plan.submit", yaml: twoPhase }),
+  ).toMatchObject({ ok: false, code: "not-onboarded" });
+  const events: unknown[] = [];
+  await client.subscribe(id, 0, (event) => events.push(event));
+  await client.query(id, "board");
+  expect(events).toEqual([]);
+  for (const type of ["onboarding.start", "onboarding.stop"])
+    await expect(client.command(id, { type })).rejects.toMatchObject({
+      code: "bad-request",
+    });
+});
+
+test("manual confirmation validates before writing and uses the pending models", async () => {
+  const appData = tempDir();
+  const client = hostAt(appData);
+  const repo = repoWithRemote(nodeRepo);
+  const { id } = await client.projects.add(repo, {
+    planner: "custom-planner",
+    coder: "custom-coder",
+    reviewer: "custom-reviewer",
+  });
+  const events: { type: string; payload: unknown }[] = [];
+  await client.subscribe(id, 0, (event) => events.push(event));
+  const bad = await client.command(id, {
+    type: "onboarding.confirm",
+    config: {
+      schemaVersion: 1,
+      baseBranch: "absent",
+      tests: { command: "" },
+    },
+  });
+  expect(bad).toMatchObject({
+    ok: false,
+    code: "validation",
+    errors: expect.arrayContaining([
+      expect.objectContaining({
+        file: "segno.config.json",
+        path: "/baseBranch",
+        code: "unknown-branch",
+      }),
+      expect.objectContaining({
+        file: "segno.config.json",
+        path: "/tests/command",
+        code: "schema",
+      }),
+    ]),
+  });
+  expect(git(repo, "status", "--porcelain")).toBe("");
+  expect(existsSync(join(appData, "projects", id, "pending.json"))).toBe(true);
+  expect(events).toEqual([]);
+  const config = {
+    schemaVersion: 1,
+    baseBranch: "main",
+    tests: { command: "npm test" },
+    roles: { coder: { allow: ["Bash(npm *)"] } },
+  };
+  expect(
+    await client.command(id, { type: "onboarding.confirm", config }),
+  ).toEqual({ ok: true, events: [1] });
+  const written = {
+    ...config,
+    roles: {
+      planner: { adapter: "claude-code", model: "custom-planner" },
+      coder: {
+        adapter: "claude-code",
+        model: "custom-coder",
+        docsModel: "haiku",
+        allow: ["Bash(npm *)"],
+      },
+      reviewer: { adapter: "claude-code", model: "custom-reviewer" },
+    },
+  };
+  expect(
+    JSON.parse(readFileSync(join(repo, "segno.config.json"), "utf8")),
+  ).toEqual(written);
+  expect(existsSync(join(appData, "projects", id, "pending.json"))).toBe(false);
+  expect(await client.projects.list()).toMatchObject([
+    { id, status: "running" },
+  ]);
+  expect(await client.query(id, "config")).toMatchObject({
+    effective: written,
+    pending: null,
+    committed: false,
+  });
+  expect(await client.query(id, "onboarding")).toMatchObject({ state: "done" });
+  expect(events).toMatchObject([
+    {
+      type: "onboarding.confirmed",
+      payload: { via: "manual", config: written },
+    },
+  ]);
+  expect(git(repo, "status", "--porcelain")).toBe("?? segno.config.json");
+  expect(
+    await client.command(id, { type: "onboarding.confirm", config }),
+  ).toMatchObject({ ok: false, code: "invalid-transition" });
+  expect(
+    await client.command(id, { type: "plan.submit", yaml: twoPhase }),
+  ).toEqual({ ok: true, events: [2] });
+});
+
+test("a config supplied before restart confirms onboarding via file once and removes pending config", async () => {
+  const appData = tempDir();
+  let client = hostAt(appData);
+  const repo = repoWithRemote();
+  const { id } = await client.projects.add(repo, {
+    planner: "opus",
+    coder: "sonnet",
+    reviewer: "opus",
+  });
+  writeFileSync(join(repo, "segno.config.json"), JSON.stringify(validConfig));
+  client = hostAt(appData);
+  expect(await client.projects.list()).toMatchObject([
+    { id, status: "running" },
+  ]);
+  const events: unknown[] = [];
+  await client.subscribe(id, 0, (event) => events.push(event));
+  await client.query(id, "board");
+  expect(events).toEqual([
+    {
+      seq: 1,
+      type: "onboarding.confirmed",
+      v: 1,
+      ts: expect.any(String),
+      payload: { via: "file" },
+    },
+  ]);
+  expect(existsSync(join(appData, "projects", id, "pending.json"))).toBe(false);
+  client = hostAt(appData);
+  const replay: unknown[] = [];
+  await client.subscribe(id, 0, (event) => replay.push(event));
+  await client.query(id, "board");
+  expect(replay).toEqual(events);
+});
+
+test("missing config replays the log before checking local settings", async () => {
+  const appData = tempDir();
+  let client = hostAt(appData);
+  const { id, repo } = await addProject(client);
+  rmSync(join(repo, "segno.config.json"));
+  writeFileSync(join(appData, "projects", id, "local.json"), "{broken");
+  const db = new Database(join(appData, "projects", id, "segno.db"));
+  db.prepare(
+    "INSERT INTO events (seq, type, v, ts, payload) VALUES (2, 'unknown', 1, '2026-10-13T20:00:00.000Z', '{}')",
+  ).run();
+  db.close();
+  client = hostAt(appData);
+  expect(await client.projects.list()).toMatchObject([
+    { status: "unavailable", reason: "unreadable-log" },
+  ]);
+});
+
+test("missing config after a submitted Plan is unavailable even after abandonment", async () => {
+  const appData = tempDir();
+  let client = hostAt(appData);
+  const { id, repo } = await addProject(client);
+  await client.command(id, { type: "plan.submit", yaml: twoPhase });
+  const [plan] = await client.query(id, "plans");
+  await client.command(id, {
+    type: "plan.abandon",
+    planId: plan?.id,
+    reason: "Done",
+  });
+  rmSync(join(repo, "segno.config.json"));
+  client = hostAt(appData);
+  expect(await client.projects.list()).toMatchObject([
+    {
+      id,
+      status: "unavailable",
+      reason: "invalid-config",
+      errors: [{ file: "segno.config.json", code: "missing-file" }],
+    },
+  ]);
+});
+
+test("missing config without a Plan recreates absent pending config with the Add defaults", async () => {
+  const appData = tempDir();
+  let client = hostAt(appData);
+  const { id, repo } = await addProject(client);
+  rmSync(join(repo, "segno.config.json"));
+  client = hostAt(appData);
+  expect(await client.projects.list()).toMatchObject([
+    { id, status: "not-onboarded" },
+  ]);
+  expect(await client.query(id, "config")).toEqual({
+    effective: null,
+    sources: {},
+    rejected: null,
+    committed: false,
+    pending: {
+      roles: {
+        planner: { model: "opus" },
+        coder: { model: "sonnet", docsModel: "haiku" },
+        reviewer: { model: "opus" },
+      },
+    },
+  });
+  expect(
+    await client.command(id, {
+      type: "onboarding.confirm",
+      config: validConfig,
+    }),
+  ).toMatchObject({ ok: true });
+  expect(await client.projects.list()).toMatchObject([
+    { id, status: "running" },
+  ]);
+});
+
 test("an empty app data directory lists no Projects", async () => {
   const client = hostAt();
   expect(await client.projects.list()).toEqual([]);
@@ -103,7 +362,7 @@ test("inspect refuses a repo without a remote", async () => {
   });
 });
 
-test("inspect proposes detected settings for a repo without a config", async () => {
+test("inspect offers only default models before Add; onboarding detects manual settings", async () => {
   const client = hostAt();
   const repo = repoWithRemote({
     "package.json": JSON.stringify({ scripts: { test: "vitest run" } }),
@@ -111,27 +370,38 @@ test("inspect proposes detected settings for a repo without a config", async () 
   });
   expect(await client.projects.inspect(repo)).toEqual({
     path: repo,
-    source: "detected",
-    packageManager: "pnpm",
+    source: "models",
     gh: "missing",
-    config: {
-      schemaVersion: 1,
-      baseBranch: "main",
-      remote: "origin",
-      tests: { command: "pnpm test" },
-      setup: { command: "pnpm install --frozen-lockfile" },
-      roles: {
-        planner: { adapter: "claude-code", model: "opus" },
-        coder: {
-          adapter: "claude-code",
-          model: "sonnet",
-          docsModel: "haiku",
-          allow: ["Bash(pnpm *)"],
+    errors: [],
+    models: { planner: "opus", coder: "sonnet", reviewer: "opus" },
+  });
+  const { id } = await client.projects.add(repo, {
+    planner: "opus",
+    coder: "sonnet",
+    reviewer: "opus",
+  });
+  expect(await client.query(id, "onboarding")).toEqual({
+    state: "idle",
+    detected: {
+      packageManager: "pnpm",
+      config: {
+        schemaVersion: 1,
+        baseBranch: "main",
+        remote: "origin",
+        tests: { command: "pnpm test" },
+        setup: { command: "pnpm install --frozen-lockfile" },
+        roles: {
+          planner: { adapter: "claude-code", model: "opus" },
+          coder: {
+            adapter: "claude-code",
+            model: "sonnet",
+            docsModel: "haiku",
+            allow: ["Bash(pnpm *)"],
+          },
+          reviewer: { adapter: "claude-code", model: "opus" },
         },
-        reviewer: { adapter: "claude-code", model: "opus" },
       },
     },
-    errors: [],
   });
 });
 
@@ -269,25 +539,26 @@ test.each([
     test: "npm test",
   },
   { name: "no manifest", files: {}, test: "" },
-])("inspect detects $name", async ({ files, packageManager, test, setup }) => {
-  const client = hostAt();
-  const result = await client.projects.inspect(repoWithRemote(files));
-  expect(result.packageManager).toBe(packageManager);
-  expect(result.config).toMatchObject({
-    tests: { command: test },
-    roles: {
-      coder: { allow: packageManager ? [`Bash(${packageManager} *)`] : [] },
-    },
-  });
-  expect((result.config as { setup?: unknown }).setup).toEqual(
-    setup ? { command: setup } : undefined,
-  );
-  expect(result.errors.map(({ path, code }) => ({ path, code }))).toEqual(
-    test ? [] : [{ path: "/tests/command", code: "schema" }],
-  );
-});
+])(
+  "onboarding detects $name",
+  async ({ files, packageManager, test, setup }) => {
+    const client = hostAt();
+    const { id } = await client.projects.add(repoWithRemote(files), models);
+    const { detected: result } = await client.query(id, "onboarding");
+    expect(result.packageManager).toBe(packageManager);
+    expect(result.config).toMatchObject({
+      tests: { command: test },
+      roles: {
+        coder: { allow: packageManager ? [`Bash(${packageManager} *)`] : [] },
+      },
+    });
+    expect((result.config as { setup?: unknown }).setup).toEqual(
+      setup ? { command: setup } : undefined,
+    );
+  },
+);
 
-test("inspect detects the base branch from the remote's HEAD, then main or master", async () => {
+test("onboarding detects the base branch from the remote's HEAD, then main or master", async () => {
   const client = hostAt();
   const repo = repoWithRemote();
   git(repo, "branch", "develop");
@@ -295,14 +566,15 @@ test("inspect detects the base branch from the remote's HEAD, then main or maste
   git(repo, "remote", "set-head", "origin", "develop");
   git(repo, "remote", "rename", "origin", "upstream");
   git(repo, "remote", "set-head", "upstream", "develop");
-  expect(await client.projects.inspect(repo)).toMatchObject({
+  const { id } = await client.projects.add(repo, models);
+  expect((await client.query(id, "onboarding")).detected).toMatchObject({
     config: { remote: "upstream", baseBranch: "develop" },
   });
   git(repo, "remote", "set-head", "upstream", "--delete");
   git(repo, "branch", "-m", "main", "master");
   git(repo, "push", "-q", "upstream", "master");
   git(repo, "update-ref", "-d", "refs/remotes/upstream/main");
-  expect(await client.projects.inspect(repo)).toMatchObject({
+  expect((await client.query(id, "onboarding")).detected).toMatchObject({
     config: { baseBranch: "master" },
   });
 });
@@ -319,7 +591,7 @@ test("inspect warns about a logged-out gh and still proposes the Project", async
   const loggedOut = hostAt(undefined, { ghBinary: stub("gh-out", 1) });
   expect(await loggedOut.projects.inspect(repo)).toMatchObject({
     gh: "logged-out",
-    source: "detected",
+    source: "models",
   });
   const loggedIn = hostAt(undefined, { ghBinary: stub("gh-in", 0) });
   expect(await loggedIn.projects.inspect(repo)).toMatchObject({ gh: "ok" });
@@ -374,62 +646,26 @@ const nodeRepo = {
   "package-lock.json": "{}",
 };
 
-test("add writes the reviewed config without committing it and starts the Project", async () => {
-  const appData = tempDir();
-  const client = hostAt(appData);
-  const repo = repoWithRemote(nodeRepo);
-  const { config } = await client.projects.inspect(repo);
-  const reviewed = {
-    ...(config as typeof validConfig),
-    tests: { command: "npm run test:ci" },
-  };
-  const { id } = await client.projects.add(repo, reviewed);
-  expect(
-    JSON.parse(readFileSync(join(repo, "segno.config.json"), "utf8")),
-  ).toEqual(reviewed);
-  expect(git(repo, "status", "--porcelain")).toBe("?? segno.config.json");
-  expect(await client.projects.list()).toEqual([
-    {
-      id,
-      name: basename(repo),
-      path: repo,
-      status: "running",
-      awaitingCount: 0,
-    },
-  ]);
-  expect(
-    JSON.parse(readFileSync(join(appData, "projects.json"), "utf8")),
-  ).toEqual([
-    { id, name: basename(repo), path: repo, addedAt: expect.any(String) },
-  ]);
-  await expect(client.projects.inspect(repo)).rejects.toMatchObject({
-    code: "already-added",
-  });
-  await expect(client.projects.add(repo)).rejects.toMatchObject({
-    code: "already-added",
-  });
-});
-
-test("add refuses unusable settings and never overwrites a committed config", async () => {
-  const appData = tempDir();
-  const client = hostAt(appData);
+test("add requires valid models only without a config and ignores models for an existing file", async () => {
+  const client = hostAt();
   const bare = repoWithRemote();
-  await expect(
-    client.projects.add(bare, { ...validConfig, concurrency: 2 }),
-  ).rejects.toMatchObject({ code: "bad-request" });
-  await expect(client.projects.add(bare)).rejects.toMatchObject({
-    code: "bad-request",
-  });
+  for (const invalid of [
+    undefined,
+    {},
+    { ...models, coder: "" },
+    { ...models, extra: "no" },
+  ])
+    await expect(client.projects.add(bare, invalid)).rejects.toMatchObject({
+      code: "bad-request",
+    });
   const committed = `${JSON.stringify(validConfig)}\n`;
   const configured = repoWithRemote({ "segno.config.json": committed });
-  await expect(
-    client.projects.add(configured, validConfig),
-  ).rejects.toMatchObject({ code: "bad-request" });
+  await client.projects.add(configured, { ignored: true });
   expect(readFileSync(join(configured, "segno.config.json"), "utf8")).toBe(
     committed,
   );
   expect(git(bare, "status", "--porcelain")).toBe("");
-  expect(await client.projects.list()).toEqual([]);
+  expect(await client.projects.list()).toMatchObject([{ status: "running" }]);
 });
 
 /** A Project added with a valid committed config. */
@@ -451,10 +687,10 @@ test("a Plan submitted in one Project needs approval in that Project only", asyn
       yaml: twoPhase,
       sourcePath: "/plans/two-phase.yaml",
     }),
-  ).toEqual({ ok: true, events: [1] });
+  ).toEqual({ ok: true, events: [2] });
   const [item] = await client.query(a.id, "awaiting");
   expect(item).toEqual({
-    id: 1,
+    id: 2,
     kind: "plan-approval",
     planId: expect.any(String),
     title: "Search saved notes",
@@ -472,7 +708,7 @@ test("a Plan submitted in one Project needs approval in that Project only", asyn
   ]);
   expect(
     await client.command(a.id, { type: "plan.approve", planId: item?.planId }),
-  ).toEqual({ ok: true, events: [2] });
+  ).toEqual({ ok: true, events: [3] });
   expect(await client.query(a.id, "awaiting")).toEqual([]);
 });
 
@@ -552,9 +788,9 @@ test("subscribe replays after since, then streams the live tail without gaps or 
   const [second] = await client.query(id, "awaiting");
   await client.command(id, { type: "plan.approve", planId: second?.planId });
 
-  expect(replayed).toEqual([2, 3, 4]);
-  expect(live).toEqual([3, 4]);
-  expect(racing).toEqual([1, 2, 3, 4]);
+  expect(replayed).toEqual([2, 3, 4, 5]);
+  expect(live).toEqual([4, 5]);
+  expect(racing).toEqual([1, 2, 3, 4, 5]);
   fromOne.close();
   fromZero.close();
   await client.command(id, {
@@ -563,8 +799,8 @@ test("subscribe replays after since, then streams the live tail without gaps or 
     reason: "Stop.",
   });
   await client.query(id, "awaiting");
-  expect(replayed).toEqual([2, 3, 4]);
-  expect(live).toEqual([3, 4, 5]);
+  expect(replayed).toEqual([2, 3, 4, 5]);
+  expect(live).toEqual([4, 5, 6]);
   tailOnly.close();
 });
 
@@ -622,8 +858,8 @@ test("queries read the Plan and Phase level of a Project", async () => {
   expect(
     await client.query(id, "phaseEvents", { phaseId: "search-index" }),
   ).toEqual([
-    expect.objectContaining({ seq: 1, type: "plan.submitted" }),
-    expect.objectContaining({ seq: 2, type: "plan.approved" }),
+    expect.objectContaining({ seq: 2, type: "plan.submitted" }),
+    expect.objectContaining({ seq: 3, type: "plan.approved" }),
   ]);
 
   for (const [name, params] of [
@@ -692,12 +928,17 @@ test("config reports the effective config, each key's source and the commit hint
       "/worktreeRoot": "local",
     },
     rejected: null,
+    pending: null,
     committed: true,
   });
 
   const detected = repoWithRemote(nodeRepo);
-  const { config } = await client.projects.inspect(detected);
-  const added = await client.projects.add(detected, config);
+  const added = await client.projects.add(detected, models);
+  const { detected: proposal } = await client.query(added.id, "onboarding");
+  await client.command(added.id, {
+    type: "onboarding.confirm",
+    config: proposal.config,
+  });
   expect(await client.query(added.id, "config")).toMatchObject({
     effective: {
       setup: { command: "npm ci" },
@@ -772,7 +1013,7 @@ test("an invalid config makes one Project unavailable with every error while the
   ).rejects.toMatchObject({ code: "unknown-project" });
   expect(
     await client.command(b.id, { type: "plan.submit", yaml: twoPhase }),
-  ).toEqual({ ok: true, events: [1] });
+  ).toEqual({ ok: true, events: [2] });
 });
 
 test("a missing folder, a lost repo or an unknown Event makes a Project unavailable with its reason", async () => {
@@ -788,7 +1029,7 @@ test("a missing folder, a lost repo or an unknown Event makes a Project unavaila
   // Startup refusal of an unknown Event stays an Event-log fixture, as in B2.
   const db = new Database(join(appData, "projects", corrupt.id, "segno.db"));
   db.prepare(
-    "INSERT INTO events (seq, type, v, ts, payload) VALUES (2, 'plan.renamed', 1, '2026-10-13T20:00:00.000Z', '{}')",
+    "INSERT INTO events (seq, type, v, ts, payload) VALUES (3, 'plan.renamed', 1, '2026-10-13T20:00:00.000Z', '{}')",
   ).run();
   db.close();
   client = hostAt(appData);
@@ -1002,4 +1243,41 @@ test("a closed client rejects waiting and later calls instead of hanging", async
   await expect(client.settings.get()).rejects.toMatchObject({
     code: "internal",
   });
+});
+
+test("an unreadable pending config is a config error and does not replace the chosen models", async () => {
+  const appData = tempDir();
+  let client = hostAt(appData);
+  const { id } = await client.projects.add(repoWithRemote(), models);
+  const pendingPath = join(appData, "projects", id, "pending.json");
+  rmSync(pendingPath);
+  mkdirSync(pendingPath);
+  client = hostAt(appData);
+  expect(await client.projects.list()).toMatchObject([
+    {
+      id,
+      status: "unavailable",
+      reason: "invalid-config",
+      errors: [{ file: "pending.json" }],
+    },
+  ]);
+});
+
+test("a replacement config records via file after a Project becomes not onboarded again", async () => {
+  const appData = tempDir();
+  let client = hostAt(appData);
+  const { id, repo } = await addProject(client);
+  rmSync(join(repo, "segno.config.json"));
+  client = hostAt(appData);
+  expect(await client.projects.list()).toMatchObject([
+    { status: "not-onboarded" },
+  ]);
+  writeFileSync(join(repo, "segno.config.json"), JSON.stringify(validConfig));
+  client = hostAt(appData);
+  const events: unknown[] = [];
+  await client.subscribe(id, 1, (event) => events.push(event));
+  await client.query(id, "config");
+  expect(events).toMatchObject([
+    { seq: 2, type: "onboarding.confirmed", payload: { via: "file" } },
+  ]);
 });

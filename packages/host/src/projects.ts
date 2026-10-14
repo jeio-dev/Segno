@@ -4,10 +4,15 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
   type ConfigError,
+  defaultProjectModels,
   HostError,
   type LocalSettings,
   localSettingsSchema,
+  type PendingConfig,
   type ProjectSummary,
+  pendingConfigSchema,
+  pendingFromModels,
+  projectModelsSchema,
   type SegnoConfig,
   validateConfigText,
 } from "@segno/core";
@@ -23,14 +28,15 @@ export interface RegistryEntry {
   addedAt: string;
 }
 
-export type RunningProject = Extract<Project, { status: "running" }>;
+export type RunningProject = Exclude<Project, { status: "unavailable" }>;
 type Unavailable = Extract<ProjectSummary, { status: "unavailable" }>;
 type Project = RegistryEntry &
   (
     | {
-        status: "running";
+        status: "running" | "not-onboarded";
+        pending: PendingConfig | null;
         engine: Engine;
-        config: SegnoConfig;
+        config: SegnoConfig | null;
         local: LocalSettings;
       }
     | {
@@ -81,22 +87,129 @@ export function openProjects(appData: string, log: HostLog, clock: Clock) {
         "not-a-repo",
         `${entry.path} is no longer a git top-level.`,
       );
-    const { config, local, errors } = await loadConfig(entry);
-    if (!config || !local)
+    let { config, local, errors } = await loadConfig(entry);
+    let running: RunningProject | undefined;
+    if (
+      existsSync(join(entry.path, "segno.config.json")) &&
+      (!config || !local)
+    )
       return unavailable(
         entry,
         "invalid-config",
         `The Project's config has ${errors.length} error${errors.length === 1 ? "" : "s"}.`,
         errors,
       );
+    let engine: Engine | undefined;
     try {
       await mkdir(projectDir(entry.id), { recursive: true });
-      const engine = openEngine({
+      engine = openEngine({
         dbPath: join(projectDir(entry.id), "segno.db"),
         clock,
+        isOnboarded: () => Boolean(config),
+        configStore: {
+          async discardPending() {
+            await rm(join(projectDir(entry.id), "pending.json"), {
+              force: true,
+            });
+          },
+          async prepareOnboarding(value) {
+            const candidate = withPendingModels(
+              value,
+              running?.pending ?? null,
+            );
+            const errors = await validateCommittedValue(entry.path, candidate);
+            return errors.length
+              ? { errors }
+              : { config: candidate as SegnoConfig, errors };
+          },
+          async writeOnboarding(value) {
+            await writeFile(
+              join(entry.path, "segno.config.json"),
+              `${JSON.stringify(value, null, 2)}\n`,
+              { flag: "wx" },
+            );
+            await rm(join(projectDir(entry.id), "pending.json"), {
+              force: true,
+            });
+          },
+          async reload() {
+            const loaded = await loadConfig(entry);
+            if (!loaded.config || !loaded.local)
+              throw new Error("The written config could not be loaded.");
+            config = loaded.config;
+            if (running) {
+              running.config = loaded.config;
+              running.local = loaded.local;
+              running.pending = null;
+              running.status = "running";
+            }
+          },
+        },
       });
-      return { ...entry, status: "running", engine, config, local };
+      if (!config && engine.state.plans.length) {
+        await engine.close();
+        return unavailable(
+          entry,
+          "invalid-config",
+          "segno.config.json is missing after a Plan was submitted.",
+          errors,
+        );
+      }
+      if (!local) {
+        await engine.close();
+        return unavailable(
+          entry,
+          "invalid-config",
+          "The local settings are invalid.",
+          errors.filter((error) => error.file !== "segno.config.json"),
+        );
+      }
+      let pending: PendingConfig | null = null;
+      if (!config) {
+        const pendingPath = join(projectDir(entry.id), "pending.json");
+        if (!existsSync(pendingPath))
+          await writeAtomic(
+            pendingPath,
+            `${JSON.stringify(pendingFromModels(defaultProjectModels), null, 2)}\n`,
+          );
+        const pendingText = await readText(pendingPath);
+        const result =
+          pendingText instanceof Error
+            ? {
+                errors: [unreadable("pending.json", pendingText)],
+                value: undefined,
+              }
+            : validateConfigText(
+                "pending.json",
+                pendingText,
+                pendingConfigSchema,
+              );
+        if (!result.value) {
+          await engine.close();
+          return unavailable(
+            entry,
+            "invalid-config",
+            "The pending config is invalid.",
+            result.errors,
+          );
+        }
+        pending = result.value;
+      }
+      running = {
+        ...entry,
+        status: config ? "running" : "not-onboarded",
+        engine,
+        config: config ?? null,
+        local,
+        pending,
+      };
+      if (config)
+        await engine.acceptConfigFile(
+          existsSync(join(projectDir(entry.id), "pending.json")),
+        );
+      return running;
     } catch (error) {
+      await engine?.close();
       log.write("error", "Engine failed to start.", {
         projectId: entry.id,
         error,
@@ -161,12 +274,12 @@ export function openProjects(appData: string, log: HostLog, clock: Clock) {
     list(): ProjectSummary[] {
       return [...projects.values()].map((project) => {
         const { id, name, path } = project;
-        if (project.status === "running")
+        if (project.status !== "unavailable")
           return {
             id,
             name,
             path,
-            status: "running",
+            status: project.status,
             awaitingCount: project.engine.state.awaiting.length,
           };
         const { reason, message, errors } = project;
@@ -185,7 +298,7 @@ export function openProjects(appData: string, log: HostLog, clock: Clock) {
     /** A running Project, or unknown-project. */
     running(id: string): RunningProject {
       const project = projects.get(id);
-      if (project?.status !== "running")
+      if (!project || project.status === "unavailable")
         throw new HostError(
           "unknown-project",
           project
@@ -203,51 +316,34 @@ export function openProjects(appData: string, log: HostLog, clock: Clock) {
             `${top} is already the Project ${project.name}.`,
           );
     },
-    async add(top: string, config: unknown) {
-      const configPath = join(top, "segno.config.json");
-      if (existsSync(configPath)) {
-        if (config !== undefined)
-          throw new HostError(
-            "bad-request",
-            "segno.config.json already exists and is never overwritten.",
-          );
-      } else {
-        if (config === undefined)
-          throw new HostError(
-            "bad-request",
-            "The repo has no segno.config.json, so reviewed settings are required.",
-          );
-        const errors = await validateCommittedValue(top, config);
-        if (errors.length)
-          throw new HostError(
-            "bad-request",
-            `The settings are invalid: ${errors.map(({ path, message }) => `${path || "/"} ${message}`).join("; ")}`,
-          );
-        try {
-          await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, {
-            flag: "wx",
-          });
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-          throw new HostError(
-            "bad-request",
-            "segno.config.json appeared while adding and is never overwritten.",
-          );
-        }
-      }
+    async add(top: string, models: unknown) {
+      const needsConfig = !existsSync(join(top, "segno.config.json"));
+      const parsed = projectModelsSchema.safeParse(models);
+      if (needsConfig && !parsed.success)
+        throw new HostError(
+          "bad-request",
+          "Planner, Coder and Reviewer models are required.",
+        );
       const entry: RegistryEntry = {
         id: randomUUID(),
         name: basename(top),
         path: top,
         addedAt: clock.now().toISOString(),
       };
+      if (needsConfig && parsed.success) {
+        await mkdir(projectDir(entry.id), { recursive: true });
+        await writeAtomic(
+          join(projectDir(entry.id), "pending.json"),
+          `${JSON.stringify(pendingFromModels(parsed.data), null, 2)}\n`,
+        );
+      }
       projects.set(entry.id, await start(entry));
       await save();
       return { id: entry.id };
     },
     async locate(id: string, top: string) {
       const project = known(id);
-      if (project.status === "running")
+      if (project.status !== "unavailable")
         throw new HostError(
           "bad-request",
           `The Project ${project.name} is running; only an unavailable Project can be located.`,
@@ -266,7 +362,7 @@ export function openProjects(appData: string, log: HostLog, clock: Clock) {
     /** Unregisters a Project; the repo is never touched [ADR-0038]. */
     async remove(id: string, { deleteData }: { deleteData: boolean }) {
       const project = known(id);
-      if (project.status === "running") await project.engine.close();
+      if (project.status !== "unavailable") await project.engine.close();
       projects.delete(id);
       await save();
       if (deleteData)
@@ -275,7 +371,7 @@ export function openProjects(appData: string, log: HostLog, clock: Clock) {
     async close() {
       await Promise.all(
         [...projects.values()].map((project) =>
-          project.status === "running" ? project.engine.close() : undefined,
+          project.status !== "unavailable" ? project.engine.close() : undefined,
         ),
       );
       projects.clear();
@@ -320,4 +416,26 @@ function unreadable(file: ConfigError["file"], error: Error): ConfigError {
     code: "missing-file",
     message: `${file} can't be read: ${error.message}`,
   };
+}
+
+/** Preserve authored settings and unknown keys for strict validation. */
+function withPendingModels(
+  value: unknown,
+  pending: PendingConfig | null,
+): unknown {
+  if (!isRecord(value) || !pending) return value;
+  if (value.roles !== undefined && !isRecord(value.roles)) return value;
+  const roles = { ...(value.roles as Record<string, unknown> | undefined) };
+  for (const role of ["planner", "coder", "reviewer"] as const) {
+    if (roles[role] !== undefined && !isRecord(roles[role])) continue;
+    roles[role] = {
+      ...(roles[role] as Record<string, unknown> | undefined),
+      adapter: "claude-code",
+      ...pending.roles[role],
+    };
+  }
+  return { ...value, roles };
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
