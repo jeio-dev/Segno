@@ -194,7 +194,7 @@ Each correction records `watchdog.corrected { taskId, violation, action }` [ADR-
 
 This follows [ADR-0049].
 
-- **When a Project is not onboarded:** its repo has no `segno.config.json` and its Event log has no `plan.submitted`. Its Engine runs with the pending config ([config.md](config.md#pending-config)). It accepts only the `onboarding.*` Commands, `store.prune` and `config.setModel` (which writes the pending config), and rejects every other Command `not-onboarded`.
+- **When a Project is not onboarded:** its repo has no `segno.config.json` and its Event log has no `plan.submitted`. Telling this apart from `missing-file` needs the log, so a missing file is classified only after the log has been replayed, in the order in [api.md](api.md#app-level-calls). The Engine runs with the pending config ([config.md](config.md#pending-config)). It accepts only the `onboarding.*` Commands, `store.prune` and `config.setModel`, and rejects every other Command `not-onboarded`.
 - **`onboarding.start`** starts one `onboarding` Run as the Planner ([runners.md](runners.md#run-kinds)). The Run uses:
   - the pending config's Planner model
   - a scratch worktree, detached at the detected base branch's remote-tracking ref
@@ -212,13 +212,13 @@ This follows [ADR-0049].
 - **The scratch worktree** is deleted when the Run ends, whatever the outcome.
 - **`onboarding.stop`** stops the live Run. It's recorded as `run.finished { outcome: stopped }` and `onboarding.stopped`.
 - **Restarts and rate limits.** An interrupted onboarding Run reruns on startup, as any interrupted step does. A rate-limited one waits under the rate-limit pause. Neither records a failure.
-- **`onboarding.confirm { config }`** validates `config`, overlaid with the pending config's models, exactly as `segno.config.json` is validated ([config.md](config.md#validation)). A failure is rejected `validation`, with the config errors. On success, the Engine:
-  1. writes `segno.config.json` without committing it
-  2. deletes the pending config
-  3. records `onboarding.confirmed { via: proposal | manual }`, where `proposal` means an `onboarding-review` was open, and resolves it
+- **`onboarding.confirm { config }`** validates `config`, overlaid with the pending config's models, exactly as `segno.config.json` is validated ([config.md](config.md#validation)). A failure is rejected `validation`, with the config errors. On success:
+  1. The Engine writes `segno.config.json`, without committing it, and deletes the pending config. The host owns every config file, so the Engine writes through the config store the host gives it, as `config.setModel` does.
+  2. The Engine records `onboarding.confirmed { via: proposal | manual }`, where `proposal` means an `onboarding-review` was open, and resolves it.
+  3. The host loads the new effective config, and the Project becomes `running` without its Engine restarting.
 
   It's rejected `invalid-transition` while an onboarding Run is live, or when the Project is already onboarded.
-- **A config that appears by itself** (for example a teammate's commit is pulled) onboards the Project. The Engine records `onboarding.confirmed { via: file }`, deletes the pending config and withdraws any open `onboarding-review`. Before B8's config watching, this is noticed when the Engine starts.
+- **A config that appears by itself** (for example a teammate's commit is pulled) onboards the Project. The Engine records `onboarding.confirmed { via: file }`, deletes the pending config through the config store and withdraws any open `onboarding-review`. Before B8's config watching, this is noticed when the Engine starts.
 
 ## Awaiting you
 

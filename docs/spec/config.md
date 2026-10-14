@@ -130,6 +130,6 @@ Only `roles.<role>.model` may override a committed key. Any other committed key 
 - **`segno.config.json` is watched** in the repo's working tree. Local settings change only through the app [ADR-0025] [ADR-0038].
 - **A valid change** is recorded as `config.changed { source, changes }` and applies to **Runs started after it**. Live Runs are unaffected [ADR-0025].
 - **An invalid change is ignored.** The previous effective config stays in force, `config.rejected { source, errors }` is recorded, and the warning shows until a valid version of that file is saved [ADR-0025].
-- **`config.setModel`** (the GUI's model settings) writes only the Project's `local.json`. It never touches `segno.config.json`, so changing a model never dirties the working tree [ADR-0025] [ADR-0038].
+- **`config.setModel`** (the GUI's model settings) writes only the Project's `local.json`. It never touches `segno.config.json`, so changing a model never dirties the working tree [ADR-0025] [ADR-0038]. While the Project is not onboarded, it writes the pending config instead, because there are no committed models to override yet [ADR-0049].
 - **Changes that need a restart.** `worktreeRoot` takes effect the next time the Project's Engine starts. A change to it is recorded with a "takes effect on restart" note [ADR-0025].
 - **App settings** apply immediately and write no Event [ADR-0038].
