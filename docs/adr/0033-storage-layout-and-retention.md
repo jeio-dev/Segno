@@ -1,5 +1,5 @@
 ---
-status: accepted, amended by ADR-0038
+status: accepted, amended by ADR-0038, ADR-0052 and ADR-0053
 ---
 
 # Storage layout, branch names and Run retention

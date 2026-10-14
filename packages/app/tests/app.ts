@@ -55,11 +55,14 @@ export interface Launched {
   appData: string;
 }
 
-/** Launches the built app on its own app data directory [ADR-0048]. */
+/**
+ * Launches the built app on its own app data directory [ADR-0048], with the
+ * fake Adapter standing in for the agent CLI.
+ */
 export async function launch(appData = tempDir()): Promise<Launched> {
   const app = await _electron.launch({
     args: [appDir],
-    env: { ...process.env, SEGNO_APP_DATA: appData },
+    env: { ...process.env, SEGNO_APP_DATA: appData, SEGNO_FAKE_ADAPTER: "1" },
   });
   cleanups.push(() => app.close().catch(() => {}));
   const page = await app.firstWindow();

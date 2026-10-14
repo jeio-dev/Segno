@@ -1,18 +1,42 @@
 import { randomUUID } from "node:crypto";
 import {
+  type AgentAdapter,
   type CommandResult,
   type ConfigError,
   commandSchema,
+  type EffectiveConfig,
   type Event,
   laterCommandTypes,
+  type PhaseState,
+  type PlanState,
   project,
+  type RunOutputItem,
   type SegnoConfig,
 } from "@segno/core";
-import { parsePlan } from "@segno/plan-format";
+import { docsTask, parsePlan } from "@segno/plan-format";
 import { openEventLog } from "./event-log.js";
+import {
+  cutPhaseBranch,
+  fetchRemote,
+  GitError,
+  slugsWithBranches,
+} from "./git.js";
+import { type Draft, type LiveRun, openWork } from "./work.js";
 
 export interface Clock {
   now(): Date;
+  /** Calls `fire` at `at`; returns a cancel function. Defaults to setTimeout. */
+  setTimer?(at: Date, fire: () => void): () => void;
+}
+/** Where and with what the Engine works a Plan; absent, Plans are only recorded. */
+export interface Workspace {
+  /** The Project's repo top-level. */
+  repo: string;
+  /** `projects/<id>/` in the app data directory. */
+  projectDir: string;
+  /** The current effective config. */
+  config(): EffectiveConfig;
+  adapters: readonly AgentAdapter[];
 }
 export interface ConfigStore {
   prepareOnboarding(
@@ -27,6 +51,21 @@ export interface EngineOptions {
   clock?: Clock;
   isOnboarded?: () => boolean;
   configStore?: ConfigStore;
+  workspace?: Workspace;
+  /** Reports a failure of internal work, which has no caller to reject. */
+  onError?: (error: unknown) => void;
+}
+
+/** A deferred Phase start is retried this long after the failed fetch [ADR-0029]. */
+const startRetryMs = 5 * 60_000;
+
+/** An unknown Run, task, Plan or Phase id. */
+export class NotFoundError extends Error {
+  readonly code = "not-found";
+  constructor(message: string) {
+    super(message);
+    this.name = "NotFoundError";
+  }
 }
 
 export class BadRequestError extends Error {
@@ -42,7 +81,15 @@ export function openEngine({
   clock = { now: () => new Date() },
   isOnboarded = () => true,
   configStore,
+  workspace,
+  onError = () => {},
 }: EngineOptions) {
+  const setTimer =
+    clock.setTimer?.bind(clock) ??
+    ((at: Date, fire: () => void) => {
+      const timer = setTimeout(fire, Math.max(0, at.getTime() - Date.now()));
+      return () => clearTimeout(timer);
+    });
   const log = openEventLog(dbPath);
   try {
     project(log.readEvents());
@@ -54,6 +101,25 @@ export function openEngine({
   let tail: Promise<void> = Promise.resolve();
   let closed = false;
   let closing: Promise<void> | undefined;
+  let queued = 0;
+  let idleWaiters: (() => void)[] = [];
+  let cancelStartRetry: (() => void) | undefined;
+  const live = new Map<string, LiveRun>();
+  const work =
+    workspace &&
+    openWork({
+      ...workspace,
+      readState: () => project(log.readEvents()),
+      emit,
+      // A Run outcome is processed, then the Plan moves on from it.
+      internal: (job) =>
+        internal(async () => {
+          await job();
+          await drive();
+        }),
+      live,
+      onError,
+    });
   return {
     get state() {
       return project(readEvents());
@@ -81,6 +147,23 @@ export function openEngine({
         payload: { via: "file" },
       });
     },
+    /**
+     * Streams a Run's live output to `listener`, then its `end`. A finished
+     * Run's `end` comes at once. Returns a function that stops listening.
+     */
+    watchRun(runId: string, listener: (item: RunOutputItem) => void) {
+      const running = live.get(runId);
+      if (running) {
+        for (const text of running.output) listener({ kind: "output", text });
+        running.listeners.add(listener);
+        return () => running.listeners.delete(listener);
+      }
+      const run = project(readEvents()).runs.find(({ id }) => id === runId);
+      if (!run) throw new NotFoundError(`Unknown Run ${runId}.`);
+      // Started but not yet launched, or finished: either way nothing is live.
+      listener({ kind: "end", outcome: run.outcome ?? "interrupted" });
+      return () => {};
+    },
     /** Calls `listener` with every Event appended from now on, in seq order. */
     onAppend(listener: (event: Event) => void): () => void {
       listeners.add(listener);
@@ -90,28 +173,161 @@ export function openEngine({
       if (closed) return Promise.reject(closedError());
       // Capture nested config values before the caller can edit a queued Command.
       const received = structuredClone(input);
-      const result = tail.then(() => processCommand(received));
-      tail = result.then(
-        () => {},
-        () => {},
-      );
-      return result;
+      return enqueue(async () => {
+        const outcome = await processCommand(received);
+        // Queued before this input settles, so idle() also waits for it.
+        if (outcome.ok) internal(drive);
+        return outcome;
+      });
+    },
+    /** Resolves once no Command, Run outcome or Engine step is pending. */
+    idle(): Promise<void> {
+      if (!queued && !live.size) return Promise.resolve();
+      return new Promise((resolve) => idleWaiters.push(resolve));
     },
     close(): Promise<void> {
       closed = true;
-      closing ??= tail.then(() => {
-        log.close();
-      });
+      cancelStartRetry?.();
+      // The last queued input may start a Run, so live Runs are stopped after
+      // the queue drains. Recording them as interrupted is B8.
+      closing ??= tail
+        .then(() => Promise.all([...live.values()].map((run) => run.stop())))
+        .then(() => {
+          log.close();
+        });
       return closing;
     },
   };
+
+  /** Processes inputs one at a time, in arrival order [ADR-0022]. */
+  function enqueue<T>(work: () => Promise<T>): Promise<T> {
+    queued++;
+    const result = tail.then(work);
+    tail = result.then(
+      () => {},
+      () => {},
+    );
+    const settle = () => {
+      if (--queued || live.size) return;
+      const waiters = idleWaiters;
+      idleWaiters = [];
+      for (const resolve of waiters) resolve();
+    };
+    result.then(settle, settle);
+    return result;
+  }
+
+  /** Queues the Engine's own work, which has no caller to reject. */
+  function internal(work: () => Promise<unknown>) {
+    if (closed) return;
+    enqueue(work).catch(onError);
+  }
+
+  /** Appends one input's Events in one transaction; returns their seqs. */
+  function emit(drafts: readonly Draft[], planId?: string): number[] {
+    if (!drafts.length) return [];
+    const first = log.lastSeq() + 1;
+    const ts = clock.now().toISOString();
+    const events = drafts.map(
+      (draft, index) => ({ ...draft, seq: first + index, v: 1, ts }) as Event,
+    );
+    log.append(events, planId);
+    for (const event of events) notify(event);
+    return events.map(({ seq }) => seq);
+  }
+
+  /** Moves the active Plan on as far as it can go without waiting. */
+  async function drive() {
+    if (!workspace || closed || !isOnboarded()) return;
+    while (!closed && (await step(workspace)));
+  }
+
+  /** Takes the next automatic step, if any; returns whether one was taken. */
+  async function step(workspace: Workspace): Promise<boolean> {
+    const state = project(log.readEvents());
+    const plan = state.plans.find(({ state }) => state === "active");
+    const phase = plan?.phases.find(
+      ({ state }) => state === "starting" || state === "active",
+    );
+    if (!plan || !phase) return false;
+    if (phase.state === "starting") return startPhase(workspace, plan, phase);
+    if (!work || !phase.branch) return false;
+    return work.step(plan, { ...phase, branch: phase.branch });
+  }
+
+  /** Fetches, then cuts the Phase branch, or defers the start [ADR-0029]. */
+  async function startPhase(
+    { repo, config }: Workspace,
+    plan: PlanState,
+    phase: PhaseState,
+  ) {
+    const due = phase.deferred && new Date(phase.deferred.nextAttemptAt);
+    if (due && due > clock.now()) {
+      retryStartAt(due);
+      return false;
+    }
+    const { remote, baseBranch } = config();
+    const branch = `segno/${plan.slug}/${phase.id}`;
+    try {
+      await fetchRemote(repo, remote);
+    } catch (error) {
+      if (!(error instanceof GitError)) throw error;
+      const nextAttemptAt = new Date(clock.now().getTime() + startRetryMs);
+      emit(
+        [
+          {
+            type: "phase.startDeferred",
+            payload: {
+              phaseId: phase.id,
+              reason: "remote-unreachable",
+              nextAttemptAt: nextAttemptAt.toISOString(),
+            },
+          },
+        ],
+        plan.id,
+      );
+      retryStartAt(nextAttemptAt);
+      return false;
+    }
+    // The local branch is never used as a fallback.
+    const baseSha = await cutPhaseBranch(repo, { branch, remote, baseBranch });
+    const definition = plan.definition.phases.find(({ id }) => id === phase.id);
+    if (!definition) throw new Error(`Unknown Phase ${phase.id}.`);
+    emit(
+      [
+        {
+          type: "phase.started",
+          payload: {
+            phaseId: phase.id,
+            branch,
+            baseSha,
+            docsTask: docsTask(definition),
+          },
+        },
+      ],
+      plan.id,
+    );
+    return true;
+  }
+
+  function retryStartAt(at: Date) {
+    cancelStartRetry?.();
+    cancelStartRetry = setTimer(at, () => {
+      cancelStartRetry = undefined;
+      internal(drive);
+    });
+  }
 
   function closedError() {
     return new Error("The Engine is closed.");
   }
 
-  function append(event: Parameters<typeof log.append>[0]) {
-    log.append(event);
+  function append(event: Event) {
+    log.append([event]);
+    notify(event);
+  }
+
+  function notify(event: Event) {
     // The Event is committed; a failing listener must not fail the Command.
     for (const listener of listeners)
       try {
@@ -269,14 +485,20 @@ export function openEngine({
       return { ok: true, events: [state.lastSeq + 1] };
     }
     if (command.type === "plan.abandon") {
-      append({
-        seq: state.lastSeq + 1,
-        type: "plan.abandoned",
-        v: 1,
-        ts: clock.now().toISOString(),
-        payload: { planId: command.planId, reason: command.reason },
-      });
-      return { ok: true, events: [state.lastSeq + 1] };
+      // Every unfinished Task is superseded and its worktree deleted [ADR-0013].
+      const ending = work?.abandon(command.planId);
+      const events = emit(
+        [
+          {
+            type: "plan.abandoned",
+            payload: { planId: command.planId, reason: command.reason },
+          },
+          ...(ending?.drafts ?? []),
+        ],
+        command.planId,
+      );
+      await ending?.cleanup();
+      return { ok: true, events };
     }
     if (
       state.plans.some(
@@ -304,7 +526,14 @@ export function openEngine({
         .replace(/[^a-z0-9]+/g, "-")
         .slice(0, 40)
         .replace(/^-|-$/g, "") || "plan";
+    // Taken by any Plan in this log, or by branches an earlier log left [ADR-0053].
     const used = new Set(state.plans.map(({ slug }) => slug));
+    if (workspace)
+      for (const slug of await slugsWithBranches(
+        workspace.repo,
+        workspace.config().remote,
+      ))
+        used.add(slug);
     let slug = stem;
     for (let suffix = 2; used.has(slug); suffix++) slug = `${stem}-${suffix}`;
     append({

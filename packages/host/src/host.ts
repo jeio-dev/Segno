@@ -2,15 +2,17 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  type AgentAdapter,
   type CallName,
   callArgsSchemas,
   defaultProjectModels,
   type HostCalls,
   HostError,
   type HostPort,
+  type RunOutputItem,
   requestSchema,
 } from "@segno/core";
-import { BadRequestError, type Clock } from "@segno/engine";
+import { BadRequestError, type Clock, NotFoundError } from "@segno/engine";
 import { ghStatus, validateCommittedText } from "./config.js";
 import { remotes, topLevelOf } from "./git.js";
 import { openHostLog } from "./log.js";
@@ -20,7 +22,7 @@ import { openSettings } from "./settings.js";
 
 export interface HostDeps {
   appData: string;
-  adapters: readonly unknown[];
+  adapters: readonly AgentAdapter[];
   clock?: Clock;
   /** The gh binary, a system boundary that S6 points at stubs. */
   ghBinary?: string;
@@ -35,11 +37,12 @@ type Handlers = {
 /** The composition root of the Engine host [ADR-0037]. */
 export function startHost({
   appData,
+  adapters,
   clock = { now: () => new Date() },
   ghBinary = "gh",
 }: HostDeps) {
   const log = openHostLog(appData);
-  const projects = openProjects(appData, log, clock);
+  const projects = openProjects(appData, log, clock, adapters);
   const settings = openSettings(appData, log);
   const ready = mkdir(appData, { recursive: true }).then(() =>
     Promise.all([settings.load(), projects.load()]),
@@ -57,7 +60,7 @@ export function startHost({
     return result;
   }
 
-  const handlers: Omit<Handlers, "subscribe"> = {
+  const handlers: Omit<Handlers, "subscribe" | "runOutput"> = {
     async command(projectId, command) {
       const { engine } = projects.running(projectId);
       if (
@@ -177,6 +180,42 @@ export function startHost({
         port.postMessage({ id, item: event });
   }
 
+  /** Streams one Run's live output; the stream closes after `end`. */
+  function runOutput(
+    port: HostPort,
+    id: number,
+    projectId: string,
+    runId: string,
+  ) {
+    const { engine } = projects.running(projectId);
+    const own = subscriptions.get(port) ?? new Map<number, () => void>();
+    subscriptions.set(port, own);
+    // A finished Run's end arrives during watchRun, before the acknowledgement.
+    const early: RunOutputItem[] = [];
+    let send = (item: RunOutputItem) => {
+      early.push(item);
+    };
+    let ended = false;
+    let stop: () => void;
+    try {
+      stop = engine.watchRun(runId, (item) => {
+        if (item.kind === "end") {
+          ended = true;
+          own.delete(id);
+        }
+        send(item);
+      });
+    } catch (error) {
+      if (error instanceof NotFoundError)
+        throw new HostError("not-found", error.message);
+      throw error;
+    }
+    if (!ended) own.set(id, stop);
+    port.postMessage({ id, result: null });
+    send = (item) => port.postMessage({ id, item });
+    for (const item of early) send(item);
+  }
+
   async function dispatch(message: unknown, port: HostPort) {
     const parsed = requestSchema.safeParse(message);
     if (!parsed.success) {
@@ -206,6 +245,11 @@ export function startHost({
       if (name === "subscribe") {
         const [projectId, since] = args.data as [string, number?];
         subscribe(port, request.id, projectId, since);
+        return;
+      }
+      if (name === "runOutput") {
+        const [projectId, runId] = args.data as [string, string];
+        runOutput(port, request.id, projectId, runId);
         return;
       }
       const handler = handlers[name] as (

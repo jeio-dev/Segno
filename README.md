@@ -2,7 +2,7 @@
 
 Segno is a local desktop app that drives AI agents through a software development cycle while the developer supervises. One app holds many Projects; each Plan is an ordered list of Phases that end in pull requests.
 
-**v1 is unreleased.** The workspace, Plan file library, offline Plan validation, the Engine's persisted Plan lifecycle, the Engine host and the desktop app shell are implemented: you can add Projects, set them up manually, and submit, review and approve Plans. Phases and Tasks don't run yet; an approved Plan's first Phase stays pending.
+**v1 is unreleased.** The workspace, Plan file library, offline Plan validation, the Engine's persisted Plan lifecycle, the Engine host and the desktop app shell are implemented: you can add Projects, set them up manually, and submit, review and approve Plans. An approved Plan's first Phase runs its Tasks through code, tests, review and the merge queue onto the Phase branch, but only with a fake agent: the Claude Code Adapter arrives in B5. Failure paths (B6), pushing the Phase branch and opening its PR (B9), and recovery after a restart (B8) are not built yet.
 
 ## Run the app from a checkout
 
@@ -32,6 +32,22 @@ Settings holds the app's editor command and theme, and each Project's name, effe
 
 With no Plan active, **Submit Plan file…** (or drop a `.yaml` or `.yml` file on the board) submits a Plan file. An invalid file lists every error as `line:column  code  message`. A valid one appears in **Awaiting you** and as the Project's count in the sidebar. **Review plan** shows every Phase and Task, with dependencies and Risk flags; **Approve** makes the Plan active, while **Send back** (notes required) and **Abandon** (reason required) close it. **Export Plan…** saves the active Plan as YAML.
 
+### Watch a Plan run
+
+Approving a Plan fetches the remote and cuts the first Phase branch, `segno/<plan-slug>/<phase-id>`, from `<remote>/<baseBranch>`; the local branch is never used. If the remote is unreachable, the board says so and the start is retried every 5 minutes. Segno adds the Phase's Docs task, `<phase-id>-docs`, which depends on every other Task.
+
+The board shows the Phase's Tasks in seven columns: Queued, Coding, Testing, Review, Merge, Blocked and Done. There is one run slot: a Task holds it from Coding through Merge, so Tasks are worked one at a time in Plan order, with the Docs task last ([ADR-0051](docs/adr/0051-a-task-holds-its-run-slot-until-it-leaves-the-loop.md)). Each Task gets its own worktree under the Project's app data directory (or `worktreeRoot`) on the branch `segno/<plan-slug>/<phase-id>--<task-id>`. Its setup command, the Coder, `tests.command` and the Reviewer run there with `SEGNO`, `SEGNO_TASK_ID`, `SEGNO_RUN_ID` and `SEGNO_SLOT` set. Anything the Coder leaves uncommitted is committed as `segno: uncommitted changes (<run-id>)`, and every Segno commit carries a `Segno-Task:` trailer. An approved Task merges the Phase branch in, is re-tested if the Phase branch moved, and lands by fast-forward; its worktree and Task branch are then deleted, and its diff is kept in app data. The Phase stays active once every Task is done.
+
+Selecting a card opens its drawer: the Task's definition, and **Diff**, **Tests** and **Transcript** tabs. A live Run's output streams into its terminal panel. The header's session meter shows live agent Runs against the run slot, and agent sessions started in this Phase.
+
+Until B5 ships the Claude Code Adapter, Tasks only run with the fake agent, which writes `<task-id>.txt` and approves every review. Start the app with it for a demo, ideally on a throwaway repo, since its commits land on `segno/*` branches:
+
+```sh
+SEGNO_FAKE_ADAPTER=1 SEGNO_APP_DATA=$(mktemp -d) pnpm dev
+```
+
+Without `SEGNO_FAKE_ADAPTER=1`, an approved Plan's Phase starts but its Tasks stay queued. Restarting the app while a Plan is running leaves it where it stopped until B8 adds recovery.
+
 ## Run Plan validation from a checkout
 
 The workspace pins pnpm through `packageManager`; the built CLI still targets Node 22.
@@ -59,31 +75,35 @@ The normative contract is [Plan file format](docs/spec/plan-format.md). [The com
 
 ## Event log and Plan lifecycle
 
-`@segno/core` declares every v1 Event with its version and exposes the shared `project(events)` reducer. Its State contains `lastSeq`, Plans in submission order, and the Awaiting-you queue. B2 projects Plan lifecycle Events; later build phases add Task and Run behavior. It also exports zod schemas for the four Plan Commands, `onboarding.confirm`, and their results and rejection codes.
+`@segno/core` declares every v1 Event with its version and exposes the shared `project(events)` reducer. Its State contains `lastSeq`, Plans with their Phases in submission order, the active Phase's Tasks, Runs, and the Awaiting-you queue. `boardOf(state, { concurrency })` derives the board that both the `board` query and the window show. Core also declares the Agent Adapter interface (`AgentAdapter`, `RunSpec`, `RunHandle`); the Engine depends on nothing else from an Adapter. It also exports zod schemas for the four Plan Commands, `onboarding.confirm`, and their results and rejection codes.
 
-`@segno/engine` exposes `openEngine({ dbPath, clock?, isOnboarded?, configStore? })`. The host supplies the readiness check and config store for onboarding. The directory containing `dbPath` must already exist. `clock` is an optional `{ now(): Date }` port, defaulting to real time.
+`@segno/engine` exposes `openEngine({ dbPath, clock?, isOnboarded?, configStore?, workspace?, onError? })`. The host supplies the readiness check and config store for onboarding, and a `workspace` (`{ repo, projectDir, config(), adapters }`) to work Plans in; without one, Plans are only recorded. The directory containing `dbPath` must already exist. `clock` is an optional `{ now(): Date, setTimer?(at, fire) }` port, defaulting to real time.
 
 - `handle(command)` processes Commands in arrival order and returns `{ ok: true, events: number[] }` or `{ ok: false, code, message, errors? }`. Invalid payloads and Plan files append nothing; an unrecognizable Command type rejects the Promise with `BadRequestError` (`code: "bad-request"`).
 - `readEvents(since?)` returns Events after a sequence number, in order. Events use `{ seq, type, v, ts, payload }`.
-- `state` returns the State projected from the log. Submission creates a `plan-approval` item. Approval, send back and abandon clear it; send back retains notes and abandon retains its reason. Approval leaves all Phases `pending` until B4.
-- `close()` drains queued Commands and closes SQLite. Further Commands are refused.
+- `state` returns the State projected from the log. Submission creates a `plan-approval` item. Approval, send back and abandon clear it; send back retains notes and abandon retains its reason. Approval starts the first Phase. Abandoning an active Plan stops its live Run, supersedes every unfinished Task and deletes their worktrees and Task branches; Phase branches are kept.
+- `watchRun(runId, listener)` streams a live Run's output, then its `end`.
+- `idle()` resolves once nothing is queued or running.
+- `close()` drains queued Commands, stops live Runs and closes SQLite. Further Commands are refused.
+
+`@segno/engine/testing` provides the fake Adapter (`fakeAdapter`, with `writesFiles`, `approves` and `runsUntilStopped` scripts), `fakeClock` and `tempRepos` for tests.
 
 The Engine records the parsed Plan in SQLite; editing its source file cannot change it. Events have gap-free sequences and are appended in one transaction per accepted Command. Opening a database replays its log, and an unknown Event type or version stops startup with an error naming it. Slugs remain unique across the Project's entire Plan history; an empty derived slug uses `plan` ([ADR-0045](docs/adr/0045-empty-plan-slug-fallback.md)).
 
 ## Engine host
 
-`@segno/host` exposes `startHost({ appData, adapters, clock?, ghBinary? })`, the composition root that the app runs in an Electron `utilityProcess`. It loads the Project registry, starts one Engine per Project that can run, and serves the [host protocol](docs/spec/api.md) over any message port: `command`, `query` (`board`, `awaiting`, `plans`, `plan`, `planExport`, `phases`, `phaseEvents`, `config`, `onboarding`), `subscribe` with replay from `since`, the `projects.*` calls and `settings.*`. `@segno/core` exports the protocol schemas and `createHostClient(port)`, which the window and the tests use. A Project that can't run (missing folder, not a repo, invalid config, unreadable Event log) is reported `unavailable` with its reason while the others keep running ([ADR-0047](docs/adr/0047-config-errors-and-project-availability.md)).
+`@segno/host` exposes `startHost({ appData, adapters, clock?, ghBinary? })`, the composition root that the app runs in an Electron `utilityProcess`. It loads the Project registry, starts one Engine per Project that can run, and serves the [host protocol](docs/spec/api.md) over any message port: `command`, `query` (`board`, `awaiting`, `task`, `taskDiff`, `run`, `runTranscript`, `runPrompt`, `plans`, `plan`, `planExport`, `phases`, `phaseEvents`, `config`, `onboarding`), `subscribe` with replay from `since`, `runOutput` for a Run's live output, the `projects.*` calls and `settings.*`. `@segno/core` exports the protocol schemas and `createHostClient(port)`, which the window and the tests use. A Project that can't run (missing folder, not a repo, invalid config, unreadable Event log) is reported `unavailable` with its reason while the others keep running ([ADR-0047](docs/adr/0047-config-errors-and-project-availability.md)).
 
 A Project without config and without any submitted Plan is `not-onboarded`: its Engine runs, its models live in `pending.json`, and Plan Commands are rejected `not-onboarded`. Manual confirmation validates and writes the config through the host config store and records `onboarding.confirmed`. A valid config supplied before startup records `via: file`. If config disappears after a Plan was submitted, the Project is unavailable; before any Plan, missing pending config is recreated with the Add defaults ([ADR-0050](docs/adr/0050-recover-missing-pending-config.md)).
 
 ## Development checks
 
 ```sh
-pnpm check:b3.1
+pnpm check:b4
 ```
 
-This chains `pnpm check:b3`: `pnpm check:b2` (the build, Biome, every Vitest suite including the S6 host tests, and the B2 exit scenario), then builds the app and drives it end to end with Playwright (S9) on temporary repos and a temporary app data directory. S9 needs a display; CI runs it under `xvfb-run` on Node 24. `pnpm test:e2e` reruns only S9 against the last app build.
+This chains `pnpm check:b3.1` and `pnpm check:b3`: `pnpm check:b2` (the build, Biome, every Vitest suite including the S3 Engine, S4 git and S6 host tests on real git repos with bare remotes, and the B2 exit scenario), then builds the app and drives it end to end with Playwright (S9) on temporary repos, a temporary app data directory and the fake Adapter. S9 needs a display; CI runs it under `xvfb-run` on Node 24. `pnpm test:e2e` reruns only S9 against the last app build.
 
-`pnpm check:b1`, `pnpm check:b2` and `pnpm check:b3` remain available for the earlier exit checks.
+`pnpm check:b1`, `pnpm check:b2`, `pnpm check:b3` and `pnpm check:b3.1` remain available for the earlier exit checks.
 
 Run `pnpm schema:generate` after changing structural rules, and review the resulting schema diff. [The build plan](docs/build-plan.md) describes the remaining work.

@@ -47,13 +47,13 @@ Segno keeps everything it stores under the app's data directory: `SEGNO_APP_DATA
       output.log           combined stdout and stderr (tests, setup, merge, probe Runs)
       verdict.json         the Verdict exactly as received (Reviewer Runs), even if malformed
       proposal.json        the onboarding proposal exactly as received (onboarding Runs)
-    tasks/<task-id>/
+    tasks/<plan-slug>/<task-id>/
       merged.diff          the Task's final diff against the Phase branch, written when it reaches done
     worktrees/<task-id>/   Task worktrees, unless worktreeRoot is set
     worktrees/_onboarding/ the scratch worktree of a live onboarding Run (never a Task id)
 ```
 
-Sources: [ADR-0033] [ADR-0038] [ADR-0025] [ADR-0009] [ADR-0048] [ADR-0049].
+Sources: [ADR-0033] [ADR-0038] [ADR-0025] [ADR-0009] [ADR-0048] [ADR-0049] [ADR-0052].
 
 - **The registry.** `projects.json` holds `{ id, name, path, addedAt }` for each Project. `id` is generated when the Project is added and never reused. `name` defaults to the folder name. The registry is app state, not an Event log, and only the app-level calls in [api.md](api.md#app-level-calls) change it, including `projects.rename` [ADR-0038] [ADR-0046].
 - **One Project is one repo.** A folder whose git top-level is already registered can't be added again [ADR-0039].
@@ -87,7 +87,7 @@ Sources: [ADR-0033] [ADR-0029] [ADR-0013].
 
 - **What gets pruned.** Run directories (`runs/<run-id>/`) older than `retention.runDays` (default 30). `0` means never [brief §Housekeeping] [ADR-0033].
 - **When.** When the Project's Engine starts, every 24 h while it runs, and on `store.prune` (the Project's **Prune runs now** setting), where `olderThanDays` overrides the configured value for that call [ADR-0033] [ADR-0038].
-- **Task diffs are never pruned.** `tasks/<task-id>/merged.diff` is kept forever, because diffs are kept for every Task, and the worktree and Task branch are gone once it's done [brief §Principles] [brief §Housekeeping].
+- **Task diffs are never pruned.** `tasks/<plan-slug>/<task-id>/merged.diff` is kept forever. It's keyed by Plan because Task ids are unique only within a Plan [ADR-0052]. It's kept because diffs are kept for every Task, and the worktree and Task branch are gone once it's done [brief §Principles] [brief §Housekeeping].
 - **Live Runs are never pruned.** A Run's age is measured from its `run.finished` timestamp [ADR-0033].
 - **It's recorded.** Pruning appends `store.pruned { runIds }`. Every Verdict is already in its `verdict.recorded` Event, so pruning loses no Verdict [ADR-0033] [brief §Decided].
 - **The GUI** shows "transcript pruned" for a pruned Run [ADR-0033].

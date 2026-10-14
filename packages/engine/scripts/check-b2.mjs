@@ -75,7 +75,8 @@ try {
   assert.equal(engine.state.plans[2].state, "active");
   assert.deepEqual(
     engine.state.plans[2].phases.map(({ state }) => state),
-    ["pending", "pending"],
+    // Approval starts the first Phase; with no workspace it stays starting.
+    ["starting", "pending"],
   );
   assert.deepEqual(engine.state.awaiting, []);
   assert.deepEqual(

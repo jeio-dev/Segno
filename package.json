@@ -17,6 +17,7 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "check:b3": "pnpm check:b2 && pnpm --filter @segno/app build && pnpm test:e2e",
     "check:b3.1": "pnpm check:b3",
+    "check:b4": "pnpm check:b3.1",
     "dev": "pnpm build && pnpm --filter @segno/app dev"
   },
   "devDependencies": {

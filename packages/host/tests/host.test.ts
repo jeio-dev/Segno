@@ -786,18 +786,18 @@ test("subscribe replays after since, then streams the live tail without gaps or 
     client.subscribe(id, 0, (event) => racing.push(event.seq)),
   ]);
   const [second] = await client.query(id, "awaiting");
-  await client.command(id, { type: "plan.approve", planId: second?.planId });
+  await client.command(id, {
+    type: "plan.sendBack",
+    planId: second?.planId,
+    notes: "Again.",
+  });
 
   expect(replayed).toEqual([2, 3, 4, 5]);
   expect(live).toEqual([4, 5]);
   expect(racing).toEqual([1, 2, 3, 4, 5]);
   fromOne.close();
   fromZero.close();
-  await client.command(id, {
-    type: "plan.abandon",
-    planId: second?.planId,
-    reason: "Stop.",
-  });
+  await client.command(id, { type: "plan.submit", yaml: twoPhase });
   await client.query(id, "awaiting");
   expect(replayed).toEqual([2, 3, 4, 5]);
   expect(live).toEqual([4, 5, 6]);
@@ -807,7 +807,14 @@ test("subscribe replays after since, then streams the live tail without gaps or 
 test("queries read the Plan and Phase level of a Project", async () => {
   const client = hostAt();
   const { id } = await addProject(client);
-  expect(await client.query(id, "board")).toEqual({ plan: null, phase: null });
+  const empty = {
+    plan: null,
+    phase: null,
+    tasks: [],
+    mergeQueue: [],
+    sessions: { live: 0, concurrency: 1, startedInPhase: 0 },
+  };
+  expect(await client.query(id, "board")).toEqual(empty);
   expect(await client.query(id, "plans")).toEqual([]);
   expect(await client.query(id, "phases")).toEqual([]);
 
@@ -818,16 +825,34 @@ test("queries read the Plan and Phase level of a Project", async () => {
   });
   const planId = (await client.query(id, "awaiting"))[0]?.planId ?? "";
   // A Plan awaiting approval is not on the board.
-  expect(await client.query(id, "board")).toEqual({ plan: null, phase: null });
+  expect(await client.query(id, "board")).toEqual(empty);
   await client.command(id, { type: "plan.approve", planId });
-  expect(await client.query(id, "board")).toEqual({
+  // With no Adapter, the Phase starts and its Tasks stay queued.
+  await expect
+    .poll(async () => (await client.query(id, "board")).phase)
+    .not.toBeNull();
+  expect(await client.query(id, "board")).toMatchObject({
     plan: {
       id: planId,
       slug: "search-saved-notes",
       title: "Search saved notes",
       state: "active",
     },
-    phase: null,
+    phase: {
+      id: "search-index",
+      title: "Search index",
+      state: "active",
+      branch: "segno/search-saved-notes/search-index",
+    },
+    tasks: [
+      { id: "index-notes", state: "ready", highRisk: true },
+      { id: "query-notes", state: "waiting", waitReason: "needs index-notes" },
+      {
+        id: "search-index-docs",
+        state: "waiting",
+        waitReason: "needs index-notes",
+      },
+    ],
   });
   expect(await client.query(id, "plans")).toEqual([
     {
@@ -845,7 +870,7 @@ test("queries read the Plan and Phase level of a Project", async () => {
     sourcePath: "/plans/two-phase.yaml",
     definition: { title: "Search saved notes" },
     phases: [
-      { id: "search-index", state: "pending" },
+      { id: "search-index", state: "active" },
       { id: "search-screen", state: "pending" },
     ],
   });
@@ -860,6 +885,7 @@ test("queries read the Plan and Phase level of a Project", async () => {
   ).toEqual([
     expect.objectContaining({ seq: 2, type: "plan.submitted" }),
     expect.objectContaining({ seq: 3, type: "plan.approved" }),
+    expect.objectContaining({ seq: 4, type: "phase.started" }),
   ]);
 
   for (const [name, params] of [
@@ -1133,6 +1159,9 @@ test("restarting the host gives identical board and awaiting results", async () 
   await client.command(b.id, { type: "plan.submit", yaml: twoPhase });
   const planId = (await client.query(b.id, "awaiting"))[0]?.planId;
   await client.command(b.id, { type: "plan.approve", planId });
+  await expect
+    .poll(async () => (await client.query(b.id, "board")).phase)
+    .not.toBeNull();
   const before = await Promise.all(
     [a.id, b.id].flatMap((id) => [
       client.query(id, "board"),

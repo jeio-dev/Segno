@@ -198,7 +198,7 @@ test("approval activates the Plan, clears its item and still prevents another Pl
   ]);
   expect(engine.state.plans[0]).toMatchObject({
     state: "active",
-    phases: [{ id: "index", state: "pending" }],
+    phases: [{ id: "index", state: "starting" }],
   });
   expect(engine.state.awaiting).toEqual([]);
   expect(await engine.handle({ type: "plan.submit", yaml })).toMatchObject({
@@ -566,7 +566,13 @@ test("a failed SQLite write appends nothing, consumes no seq and does not poison
       "write failed",
     );
     expect(engine.readEvents()).toEqual([]);
-    expect(engine.state).toEqual({ lastSeq: 0, plans: [], awaiting: [] });
+    expect(engine.state).toEqual({
+      lastSeq: 0,
+      plans: [],
+      tasks: [],
+      runs: [],
+      awaiting: [],
+    });
     db.exec("DROP TRIGGER fail_write");
     expect(await engine.handle({ type: "plan.submit", yaml })).toEqual({
       ok: true,

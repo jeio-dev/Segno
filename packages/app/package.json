@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@segno/core": "workspace:*",
+    "@segno/engine": "workspace:*",
     "@segno/host": "workspace:*",
     "@segno/ui": "workspace:*",
     "electron": "44.7.0"
