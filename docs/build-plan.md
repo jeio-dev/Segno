@@ -21,7 +21,7 @@ This is the order in which v1 gets built. v1 is defined in [spec/README.md § v1
 | B1 | Workspace and Plan file | done | [#6](https://github.com/jeio-dev/Segno/pull/6) |
 | B2 | Event log and reducer | done | [#7](https://github.com/jeio-dev/Segno/pull/7) |
 | B3 | Engine host, app shell and Projects | done | [#8](https://github.com/jeio-dev/Segno/pull/8) |
-| B3.1 | Adding a Project without a config | not started | |
+| B3.1 | Adding a Project without a config | done | |
 | B4 | Happy-path Task with a fake Adapter | not started | |
 | B5 | Claude Code Adapter | not started | |
 | B6 | Failure paths | not started | |
@@ -235,6 +235,15 @@ A follow-up to B3, raised after using it: typing a test command before a Project
 
 **Docs:** the README's "adding a Project" says how to add a Project and set it up by hand.
 
+**B3.1 implementation notes:**
+- Missing pending config is recreated with the Add defaults only when the Project is not onboarded [ADR-0050]. Existing pending config is validated.
+- `projects.add` still requires models when the repo has no config; an existing config ignores that argument. `projects.inspect` returns `source: models` and the default models, or `source: file` with its validation result. Detection is returned by the `onboarding` query.
+- An existing valid config records `onboarding.confirmed { via: file }` on a new Project. Confirmation is per transition into onboarded, not once per Project: if config disappears before any Plan and the Project becomes not onboarded again, restoring the file records another confirmation at startup. Ordinary restarts do not repeat confirmation. Existing Plan history needs no retrospective confirmation. Manual confirmation keeps the Engine and its subscriptions alive.
+- Model editing (`config.setModel`), file watching and pruning remain in B8. The onboarding Run and its start/stop Commands remain in B5.
+
+**Verification:** `pnpm check:b3.1` passes on Node 24.21.0: 174 Vitest tests (46 at S6), the B2 exit scenario, and 9 S9 journeys against the built app. Code review is complete. CI is configured to run `check:b3.1`; its result is pending a developer-authorized push and PR.
+
+
 ## B4: Happy-path Task with a fake Adapter
 
 **Implements:** [engine.md § Phase lifecycle](spec/engine.md#phase-lifecycle) rows `pending` → `starting` → `active` (fetch, Phase branch cut, Docs task added, deferred start on fetch failure); [§ Automatic transitions](spec/engine.md#automatic-transitions) success rows from `waiting` to `done`; the merge queue and the skipped re-test; [§ Scheduling](spec/engine.md#automatic-transitions); `plan.abandon` effects on worktrees and Task branches. [store.md § Worktrees](spec/store.md#worktrees), [§ Branches](spec/store.md#branches), `runs/` and `tasks/<id>/merged.diff`. [runners.md § Run kinds](spec/runners.md#run-kinds) (`tests`, `setup`, `merge`), [§ Adapter interface](spec/runners.md#adapter-interface) (types only), [§ Script Runs](spec/runners.md#script-runs), [§ Run environment](spec/runners.md#run-environment), [§ Commits](spec/runners.md#commits), [§ Transcripts and live output](spec/runners.md#transcripts-and-live-output). [api.md](spec/api.md) the `task`, `taskDiff`, `run`, `runTranscript` and `runPrompt` queries and [§ Live Run output](spec/api.md#live-run-output). [gui.md](spec/gui.md) § Board columns and cards (happy-path states), the session meter, and § Card drawer (Diff, Tests and Transcript tabs). [ADR-0001] [ADR-0003] [ADR-0005] [ADR-0009] [ADR-0011] [ADR-0014] [ADR-0017] [ADR-0018] [ADR-0028] [ADR-0029] [ADR-0033] [ADR-0038].
@@ -403,3 +412,4 @@ Changes to an existing Event's shape before the first release [ADR-0035]. Delete
 | Build phase | Event `type` | Change |
 |---|---|---|
 | B3 | `config.rejected` | `errors` are config errors (`{ file, path, line?, column?, code, message }`) instead of Plan file validation errors [ADR-0047]. No such Event had been written |
+| B3.1 | `config.rejected` | The shared config-error shape also accepts `pending.json` as `file` [ADR-0049] [ADR-0050]. No such Event has been written; `onboarding.confirmed` is a new Event type |

@@ -6,9 +6,13 @@ All notable changes to Segno are documented here, following [Keep a Changelog](h
 
 ### Added
 
+- Models-only Project addition: Projects without config start as **Not onboarded**, with their chosen models stored in app data. **Set up manually** shows detected settings and saves an uncommitted config (ADR-0049).
+- Manual and file-based onboarding confirmation, pending config queries, and the `not-onboarded` Plan rejection. Missing pending config is recovered with the Add defaults before any Plan exists (ADR-0050).
+- `pnpm check:b3.1`, with S6 onboarding coverage and S9 manual setup journeys; CI now runs this exit check.
+
 - Desktop app shell on Electron 44: one window, single-instance lock, a sandboxed preload, and supervision of the Engine host (restart once, then **Restart Engine**).
 - Engine host running one Engine per Project, with the IPC protocol, Event streams that replay from a sequence number, and per-Project queries for the board, Awaiting you, Plans, Plan export, Phases and config.
-- Projects: a sidebar with Awaiting-you counts, adding a repo with detected settings or its committed `segno.config.json`, unavailable Projects with their reason and every config error, **Locate…**, **Remove project** and renaming (ADR-0046).
+- Projects: a sidebar with Awaiting-you counts, adding a repo with models or its committed `segno.config.json`, unavailable Projects with their reason and every config error, **Locate…**, **Remove project** and renaming (ADR-0046).
 - Strict validation of `segno.config.json` and local settings with located errors, including always-denied `allow` entries and offline remote and base-branch checks (ADR-0047).
 - Plan submission from a file picker or by drag and drop, Plan review with approve, send back and abandon, and **Export Plan…**.
 - App settings for the editor command and the light, dark or system theme, with bundled fonts.

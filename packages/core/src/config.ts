@@ -12,10 +12,10 @@ export const configErrorCodes = [
   "adapter",
 ] as const;
 export type ConfigErrorCode = (typeof configErrorCodes)[number];
-export type ConfigFile = "segno.config.json" | "local.json";
+export type ConfigFile = "segno.config.json" | "local.json" | "pending.json";
 
 export const configErrorSchema = z.strictObject({
-  file: z.enum(["segno.config.json", "local.json"]),
+  file: z.enum(["segno.config.json", "local.json", "pending.json"]),
   path: z.string(),
   line: z.number().int().min(1).optional(),
   column: z.number().int().min(1).optional(),
@@ -25,6 +25,35 @@ export const configErrorSchema = z.strictObject({
 export type ConfigError = z.infer<typeof configErrorSchema>;
 
 const nonEmpty = z.string().min(1, "Must not be empty.");
+export const projectModelsSchema = z.strictObject({
+  planner: nonEmpty,
+  coder: nonEmpty,
+  reviewer: nonEmpty,
+});
+export type ProjectModels = z.infer<typeof projectModelsSchema>;
+export const defaultProjectModels: ProjectModels = {
+  planner: "opus",
+  coder: "sonnet",
+  reviewer: "opus",
+};
+export const pendingConfigSchema = z.strictObject({
+  roles: z.strictObject({
+    planner: z.strictObject({ model: nonEmpty }),
+    coder: z.strictObject({ model: nonEmpty, docsModel: nonEmpty }),
+    reviewer: z.strictObject({ model: nonEmpty }),
+  }),
+});
+export type PendingConfig = z.infer<typeof pendingConfigSchema>;
+export function pendingFromModels(models: ProjectModels): PendingConfig {
+  return {
+    roles: {
+      planner: { model: models.planner },
+      coder: { model: models.coder, docsModel: "haiku" },
+      reviewer: { model: models.reviewer },
+    },
+  };
+}
+
 const minutes = z.number().int().min(1).max(1440);
 const role = z.strictObject({
   adapter: z.literal("claude-code", {

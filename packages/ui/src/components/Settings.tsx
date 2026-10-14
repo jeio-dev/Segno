@@ -140,7 +140,7 @@ function ProjectSettings({
     }
   }
 
-  const effectiveRoles = config?.effective.roles;
+  const effectiveRoles = config?.effective?.roles;
   const models = {
     planner: effectiveRoles?.planner?.model,
     coder: effectiveRoles?.coder.model,

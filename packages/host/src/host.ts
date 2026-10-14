@@ -4,18 +4,14 @@ import { join } from "node:path";
 import {
   type CallName,
   callArgsSchemas,
+  defaultProjectModels,
   type HostCalls,
   HostError,
   type HostPort,
   requestSchema,
 } from "@segno/core";
 import { BadRequestError, type Clock } from "@segno/engine";
-import {
-  ghStatus,
-  validateCommittedText,
-  validateCommittedValue,
-} from "./config.js";
-import { detectConfig } from "./detect.js";
+import { ghStatus, validateCommittedText } from "./config.js";
 import { remotes, topLevelOf } from "./git.js";
 import { openHostLog } from "./log.js";
 import { openProjects } from "./projects.js";
@@ -99,18 +95,17 @@ export function startHost({
           errors,
         };
       }
-      const detected = await detectConfig(top);
       return {
         path: top,
-        source: "detected",
-        ...detected,
+        source: "models",
+        models: { ...defaultProjectModels },
         gh,
-        errors: await validateCommittedValue(top, detected.config),
+        errors: [],
       };
     },
-    "projects.add"(path, config) {
+    "projects.add"(path, models) {
       return serialized(async () =>
-        projects.add(await addableTopLevel(path), config),
+        projects.add(await addableTopLevel(path), models),
       );
     },
     "projects.locate"(id, path) {

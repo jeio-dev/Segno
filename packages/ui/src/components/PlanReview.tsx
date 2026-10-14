@@ -1,7 +1,7 @@
 import type { HostClient, PlanState } from "@segno/core";
 import { useEffect, useRef, useState } from "react";
 import { errorMessage } from "../format.js";
-import { RejectionNotice } from "./ProjectView.js";
+import { RejectionNotice } from "./RejectionNotice.js";
 
 type Action = "approve" | "sendBack" | "abandon";
 

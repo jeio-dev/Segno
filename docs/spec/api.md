@@ -34,7 +34,7 @@ Every call is a request with one response, except the two streams. Calls that ac
 ```
 
 - A rejection is a normal result, not an error. The error `bad-request` is used only when the Command has no recognizable `type` [ADR-0022].
-- `RejectionCode` values are listed in [engine.md](engine.md#rejection-codes). `errors` is present for `validation` and uses the shape in [plan-format.md](plan-format.md#validation).
+- `RejectionCode` values are listed in [engine.md](engine.md#rejection-codes). `errors` is present for `validation` and uses the shape in [plan-format.md](plan-format.md#validation). For `onboarding.confirm`, config errors use the shape in [config.md](config.md#validation) [ADR-0049].
 - Commands are processed in arrival order, per Project (see [engine.md](engine.md#processing-model)).
 
 ## Queries

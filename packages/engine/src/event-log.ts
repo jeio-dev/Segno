@@ -54,15 +54,15 @@ export function openEventLog(path: string) {
         };
       }) as Event[];
     },
-    append(event: Extract<Event, { type: `plan.${string}` }>) {
+    append(event: Event) {
       db.transaction(() => {
         insert.run(
           event.seq,
           event.type,
           event.v,
           event.ts,
-          event.payload.planId,
-          null,
+          "planId" in event.payload ? event.payload.planId : null,
+          "taskId" in event.payload ? event.payload.taskId : null,
           JSON.stringify(event.payload),
         );
       })();

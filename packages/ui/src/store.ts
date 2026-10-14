@@ -108,7 +108,9 @@ export class AppStore {
     const projects = await client.projects.list();
     if (client !== this.snapshot.client) return;
     const running = new Set(
-      projects.filter(({ status }) => status === "running").map(({ id }) => id),
+      projects
+        .filter(({ status }) => status !== "unavailable")
+        .map(({ id }) => id),
     );
     for (const [id, stream] of this.streams)
       if (!running.has(id)) {

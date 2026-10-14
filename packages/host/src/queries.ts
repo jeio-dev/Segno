@@ -6,6 +6,7 @@ import {
   resolveConfig,
 } from "@segno/core";
 import { exportPlan } from "@segno/plan-format";
+import { detectConfig } from "./detect.js";
 import { git } from "./git.js";
 import type { RunningProject } from "./projects.js";
 
@@ -13,7 +14,7 @@ type Results = { [Q in QueryName]: Queries[Q]["result"] };
 
 /** Reads one query's derived state from a Project's Engine [ADR-0022]. */
 export async function runQuery(
-  { engine, path, config, local }: RunningProject,
+  { engine, path, config, local, pending }: RunningProject,
   name: string,
   params: unknown,
 ): Promise<Results[QueryName]> {
@@ -73,7 +74,20 @@ export async function runQuery(
         return scoped.phaseId === phaseId || scoped.planId === plan.id;
       });
     }
+    case "onboarding":
+      return {
+        state: config ? "done" : "idle",
+        detected: await detectConfig(path),
+      };
     case "config": {
+      if (!config)
+        return {
+          effective: null,
+          sources: {},
+          rejected: null,
+          committed: false,
+          pending,
+        };
       const { effective, sources } = resolveConfig(config, local);
       const committed =
         (await git(
@@ -83,7 +97,7 @@ export async function runQuery(
           `refs/remotes/${effective.remote}/${effective.baseBranch}:segno.config.json`,
         )) !== undefined;
       // config.rejected is first recorded in B8.
-      return { effective, sources, rejected: null, committed };
+      return { effective, sources, rejected: null, committed, pending: null };
     }
   }
 }
