@@ -1,4 +1,4 @@
-import type { PermissionProfile, RunSpec } from "@segno/core";
+import type { JSONSchema, PermissionProfile, RunSpec } from "@segno/core";
 import { alwaysDeniedGit } from "./allow.js";
 
 /** Network access, denied unless the profile or its `allow` adds it [ADR-0004]. */
@@ -44,11 +44,16 @@ export function argvFor(
     // mcp is false in every profile: no MCP servers at all.
     "--strict-mcp-config",
     ...(spec.outputSchema
-      ? ["--json-schema", JSON.stringify(spec.outputSchema)]
+      ? ["--json-schema", JSON.stringify(withoutDialect(spec.outputSchema))]
       : []),
     // A probe only checks the rate limit, with no tools at all [ADR-0054].
     ...(spec.kind === "probe" ? ["--tools", ""] : []),
   ];
+}
+
+/** The schema minus its `$schema` key, which Claude Code can't resolve [ADR-0057]. */
+function withoutDialect({ $schema: _, ...schema }: JSONSchema) {
+  return schema;
 }
 
 function allowedTools({ edit, shell, network, extraAllow }: PermissionProfile) {

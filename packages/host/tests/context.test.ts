@@ -42,7 +42,11 @@ const config = {
   baseBranch: "main",
   tests: { command: "echo tests passed" },
   roles: {
-    coder: { adapter: "claude-code", model: "sonnet" },
+    coder: {
+      adapter: "claude-code",
+      model: "sonnet",
+      allow: ["Bash(make lint)", "WebFetch(domain:example.com)"],
+    },
     reviewer: { adapter: "claude-code", model: "opus" },
   },
   docs: { changelog: "CHANGELOG.md" },
@@ -109,7 +113,7 @@ async function promptOf(client: HostClient, id: string, runId: string) {
   return client.query(id, "runPrompt", { runId });
 }
 
-test("a first-pass Coder gets its Task, the definition of done and the test command, and nothing else", async () => {
+test("a first-pass Coder gets its Task, the shell commands it may run, the definition of done and the test command, and nothing else", async () => {
   const adapter = fakeAdapter();
   const client = hostWith([adapter]);
   const { id } = await approvedProject(client);
@@ -145,6 +149,25 @@ Start from these:
 - src/index.ts
 - docs/storage.md
 
+## Shell
+
+Run only these shell commands, where \`*\` stands for any arguments:
+
+- \`echo tests passed\`
+- \`git status *\`
+- \`git diff *\`
+- \`git log *\`
+- \`git show *\`
+- \`git add *\`
+- \`git commit *\`
+- \`ls *\`
+- \`grep *\`
+- \`git ls-files *\`
+- \`git grep *\`
+- \`make lint\`
+
+Run each one on its own, never joined with \`&&\`, \`||\`, \`;\`, \`|\` or \`$(…)\`: a joined command is refused whole if any part isn't listed. A refused command doesn't turn the shell off, so keep using the listed ones.
+
 ## Definition of done
 
 - Meet every acceptance criterion.
@@ -155,7 +178,7 @@ Start from these:
   expect(await promptOf(client, id, coder?.runId ?? "")).toBe(coder?.prompt);
 });
 
-test("a Reviewer gets the Task, its diff range, that tests passed and the Verdict schema as its output schema", async () => {
+test("a Reviewer gets the Task, its diff range, that tests passed, its shell commands and the Verdict schema as its output schema", async () => {
   const adapter = fakeAdapter({
     reviewer: async () => ({ kind: "crashed", detail: "Stop here." }),
   });
@@ -199,6 +222,20 @@ Review the changes in \`${base}..HEAD\`, for example with \`git diff ${base}..HE
 
 Check whether the changes alter behavior that docs describe, and whether those docs were updated to match.
 
+## Shell
+
+Run only these shell commands, where \`*\` stands for any arguments:
+
+- \`git log *\`
+- \`git show *\`
+- \`git diff *\`
+- \`ls *\`
+- \`grep *\`
+- \`git ls-files *\`
+- \`git grep *\`
+
+Run each one on its own, never joined with \`&&\`, \`||\`, \`;\`, \`|\` or \`$(…)\`: a joined command is refused whole if any part isn't listed. A refused command doesn't turn the shell off, so keep using the listed ones.
+
 ## Verdict
 
 Answer with a Verdict that matches this JSON Schema. In \`acceptance\`, \`index\` is the criterion's number above.
@@ -241,7 +278,7 @@ ${JSON.stringify(reviewer?.outputSchema, null, 2)}
     expect(valid(invalid)).toBe(false);
 });
 
-test("the Docs task gets the Phase, its done Tasks' Verdict summaries, advisory Findings, the Phase diff range, the docs block and the changelog", async () => {
+test("the Docs task gets the Phase, its done Tasks' Verdict summaries, advisory Findings, the Phase diff range, the docs block, its shell commands and the changelog", async () => {
   const adapter = fakeAdapter({ reviewer: approvesWithAdvice });
   const client = hostWith([adapter]);
   const { id, base } = await approvedProject(client);
@@ -277,6 +314,25 @@ The Phase's changes are \`${base}..HEAD\`, against \`main\`.
 ## Docs to write
 
 Document the search syntax in docs/search.md.
+
+## Shell
+
+Run only these shell commands, where \`*\` stands for any arguments:
+
+- \`echo tests passed\`
+- \`git status *\`
+- \`git diff *\`
+- \`git log *\`
+- \`git show *\`
+- \`git add *\`
+- \`git commit *\`
+- \`ls *\`
+- \`grep *\`
+- \`git ls-files *\`
+- \`git grep *\`
+- \`make lint\`
+
+Run each one on its own, never joined with \`&&\`, \`||\`, \`;\`, \`|\` or \`$(…)\`: a joined command is refused whole if any part isn't listed. A refused command doesn't turn the shell off, so keep using the listed ones.
 
 ## Changelog
 

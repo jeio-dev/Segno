@@ -107,11 +107,13 @@ type PermissionProfile = {
 |---|---|---|---|
 | `read` | yes | yes | yes |
 | `edit` | no | yes, worktree only | no |
-| `shell` | `git log *`, `git show *`, `git diff *`, `ls *` | `tests.command`, `setup.command`, `git status *`, `git diff *`, `git log *`, `git show *`, `git add *`, `git commit *` | `git log *`, `git show *`, `git diff *`, `ls *` |
+| `shell` | `git log *`, `git show *`, `git diff *`, and the search commands | `tests.command`, `setup.command`, `git status *`, `git diff *`, `git log *`, `git show *`, `git add *`, `git commit *`, and the search commands | `git log *`, `git show *`, `git diff *`, and the search commands |
 | `network` | no | no | no |
 | `mcp` | none | none | none |
 
-Sources: [ADR-0004].
+The search commands are `ls *`, `grep *`, `git ls-files *` and `git grep *`. Claude Code has no Glob or Grep tool, so agents list and search files through these, and none of them can write a file or start another program [ADR-0059].
+
+Sources: [ADR-0004] [ADR-0059].
 
 **Onboarding profile.** The `onboarding` Run gets the broadest profile in Segno, used only on the developer's request and before any Plan exists [ADR-0049]:
 - `read: true`
@@ -150,12 +152,12 @@ It maps a `RunSpec` onto `claude -p` (verified against Claude Code 2.1.299) [ADR
 | settings isolation | `--setting-sources project`, so user and local settings are not loaded and the repo's `CLAUDE.md` is [ADR-0004] [ADR-0024] |
 | the repo's permission grants | every `permissions.allow` entry in the repo's `.claude/settings.json` that the Run doesn't already allow, exactly or by its bare tool name, is added to `--disallowedTools` [ADR-0056] |
 | `mcp: false` | `--strict-mcp-config` with no `--mcp-config` |
-| `outputSchema` | `--json-schema <schema>` |
+| `outputSchema` | `--json-schema <schema>`, without its top-level `$schema` key, which Claude Code can't resolve [ADR-0057] |
 | `kind: probe` | `--tools ""`: no tools at all, whatever the profile allows [ADR-0054] |
 
 Capabilities: `resume`, `structuredOutput` and `toolAllowlist` are all true. `usage` is true only if the installed version's stream reports usage, as detected by `detect()` [ADR-0017] [ADR-0021].
 
-- **Classifying results.** A `result` message without an error is `completed`. A usage-limit or rate-limit signal in the stream is `rate-limited`, with `resetAt` when the CLI provides one. A non-zero exit or an error result is `failed`. Death by signal or a truncated stream is `crashed` [ADR-0017] [ADR-0021].
+- **Classifying results.** A `result` message without an error is `completed`. A usage-limit or rate-limit signal in the stream is `rate-limited`, with `resetAt` when the CLI provides one. A non-zero exit or an error result is `failed`. Death by signal or a truncated stream is `crashed`, with claude's stderr as its detail when it printed any [ADR-0017] [ADR-0021] [ADR-0057].
 - **Test fixtures.** The Adapter must be tested against recorded real outputs for each classification.
 - **Repo instructions.** The repo's own `CLAUDE.md` and similar files are read by Claude Code itself as usual. Segno doesn't copy them into prompts [ADR-0024].
 
@@ -280,15 +282,15 @@ The Engine builds every prompt from fixed ingredients and writes it to `prompt.m
 
 | Run | Includes | Never includes |
 |---|---|---|
-| `coder` (first pass) | Plan title and summary (≤ 1 paragraph); Phase title; the Task's `title`, `description`, `acceptance` and `context` hints; the definition of done (meet every acceptance criterion; update docs for any behavior you change; run `tests.command` before you finish and fix what fails; commit your work); `tests.command` [ADR-0049] | other Tasks' definitions, earlier transcripts, advisory Findings |
+| `coder` (first pass) | Plan title and summary (≤ 1 paragraph); Phase title; the Task's `title`, `description`, `acceptance` and `context` hints; the definition of done (meet every acceptance criterion; update docs for any behavior you change; run `tests.command` before you finish and fix what fails; commit your work); `tests.command`; the shell commands its profile allows, to run one at a time [ADR-0049] [ADR-0058] | other Tasks' definitions, earlier transcripts, advisory Findings |
 | `coder` (later passes) | all of the above, plus whichever applies: open blocking Findings (Reviewer and developer); the last 200 lines of the failing test log and its path; the conflicting files | same |
-| `reviewer` | the Task's `title`, `description`, `acceptance` and risk; the diff range `<merge-base>..HEAD`; the fact that tests passed; the previous Verdict's blocking Findings on a re-review; the Verdict schema; the instruction to check docs for changed behavior | Coder transcripts, other Tasks |
-| `docs` | Phase title and Plan summary; each `done` Task's title and final Verdict summary; advisory Findings from the Phase; the Phase diff range against `baseBranch`; the Phase `docs` block; `docs.changelog` | transcripts |
+| `reviewer` | the Task's `title`, `description`, `acceptance` and risk; the diff range `<merge-base>..HEAD`; the fact that tests passed; the previous Verdict's blocking Findings on a re-review; the Verdict schema; the instruction to check docs for changed behavior; the shell commands its profile allows, to run one at a time [ADR-0058] | Coder transcripts, other Tasks |
+| `docs` | Phase title and Plan summary; each `done` Task's title and final Verdict summary; advisory Findings from the Phase; the Phase diff range against `baseBranch`; the Phase `docs` block; `docs.changelog`; the shell commands its profile allows, to run one at a time [ADR-0058] | transcripts |
 | `onboarding` | the detected settings as a starting guess to verify; the check order and the rule never to weaken a failing suite; the instruction to run the setup command and the chosen check and report their exit codes and durations; the proposal schema | anything about Plans or Tasks |
 | `planner` **(v1.2)** | Planning session: the brief and the thread so far (through session resume), plus the Plan schema. Ask Planner: the Task definition, its Verdicts, the last 200 lines of its last test log, the Block reason and the fragment schema | Coder transcripts |
 | `probe` | a minimal fixed prompt, with no tools [ADR-0054] | anything else |
 
-Sources: [ADR-0024] [ADR-0010] [ADR-0021] [ADR-0049] [brief §Principles].
+Sources: [ADR-0024] [ADR-0010] [ADR-0021] [ADR-0049] [ADR-0058] [brief §Principles].
 
 - **Fresh sessions.** Every agent Run starts a new session, except an interruption resume [ADR-0020], a Verdict repair [ADR-0016], and later turns of a Planning session [ADR-0010].
 - **Built-in templates.** Prompt templates are built in. Overriding them is **(later)** [ADR-0030].

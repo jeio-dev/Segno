@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { MessageChannel } from "node:worker_threads";
 import { claudeCodeAdapter } from "@segno/adapter-claude-code";
 import { createHostClient, type HostClient } from "@segno/core";
@@ -68,6 +69,49 @@ function host(): HostClient {
 
 const minutes = (count: number) => count * 60_000;
 
+/**
+ * Waits until every Task is done. Fails at once, with the reason, when a Run
+ * ends other than completed or a Reviewer doesn't approve: B5 neither retries
+ * nor sends work back (B6), so the Plan would never finish.
+ */
+async function untilDone(client: HostClient, id: string, timeout: number) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const { tasks } = await client.query(id, "board");
+    const states = tasks.map(({ state }) => state);
+    if (states.length > 0 && states.every((state) => state === "done"))
+      return states;
+    for (const { id: taskId } of tasks) {
+      const task = await client.query(id, "task", { taskId });
+      for (const run of task.runs) {
+        if (run.outcome && run.outcome !== "completed")
+          throw new Error(
+            `${taskId}: the ${run.kind} Run ended ${run.outcome}: ${run.detail ?? "no detail"}`,
+          );
+        const approved = task.verdicts.some(({ runId }) => runId === run.id);
+        if (run.kind === "reviewer" && run.outcome && !approved)
+          throw new Error(
+            `${taskId}: the Reviewer didn't approve: ${await answerOf(client, id, run.id)}`,
+          );
+      }
+    }
+    if (Date.now() > deadline)
+      throw new Error(`Timed out with the Tasks ${states.join(", ")}.`);
+    await sleep(5_000);
+  }
+}
+
+/** A Run's final answer, from the result message in its transcript. */
+async function answerOf(client: HostClient, id: string, runId: string) {
+  const transcript = await client.query(id, "runTranscript", { runId });
+  const result = transcript
+    .split("\n")
+    .filter((line) => line.includes('"type":"result"'))
+    .map((line) => JSON.parse(line) as { result?: string })
+    .at(-1);
+  return result?.result ?? "no result";
+}
+
 test(
   "a one-Task Plan reaches done with the real claude, and prompt.md holds exactly the Run context",
   async () => {
@@ -84,6 +128,7 @@ test(
     const repo = repoWithRemote({
       "segno.config.json": `${JSON.stringify(config)}\n`,
       "README.md": "# Greeter\n",
+      "CHANGELOG.md": "# Changelog\n",
       "hello.test.js": `import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert";
@@ -110,13 +155,7 @@ phases:
     });
     const [plan] = await client.query(id, "plans");
     await client.command(id, { type: "plan.approve", planId: plan?.id });
-    await expect
-      .poll(
-        async () =>
-          (await client.query(id, "board")).tasks.map(({ state }) => state),
-        { timeout: minutes(20), interval: 5_000 },
-      )
-      .toEqual(["done", "done"]);
+    expect(await untilDone(client, id, minutes(20))).toEqual(["done", "done"]);
 
     const task = await client.query(id, "task", { taskId: "hello-file" });
     const coder = task.runs.find(({ kind }) => kind === "coder");
@@ -137,6 +176,24 @@ Create hello.txt in the repo root.
 ### Acceptance criteria
 
 - hello.txt contains exactly the line "hello"
+
+## Shell
+
+Run only these shell commands, where \`*\` stands for any arguments:
+
+- \`node --test\`
+- \`git status *\`
+- \`git diff *\`
+- \`git log *\`
+- \`git show *\`
+- \`git add *\`
+- \`git commit *\`
+- \`ls *\`
+- \`grep *\`
+- \`git ls-files *\`
+- \`git grep *\`
+
+Run each one on its own, never joined with \`&&\`, \`||\`, \`;\`, \`|\` or \`$(…)\`: a joined command is refused whole if any part isn't listed. A refused command doesn't turn the shell off, so keep using the listed ones.
 
 ## Definition of done
 
@@ -174,7 +231,11 @@ test("adds", () => assert.strictEqual(1 + 1, 2));
         timeout: minutes(15),
         interval: 5_000,
       })
-      .toBe("proposed");
+      .not.toBe("running");
+    // A failure shows its reason in the diff.
+    expect(await client.query(id, "onboarding")).toMatchObject({
+      state: "proposed",
+    });
 
     const { proposal } = await client.query(id, "onboarding");
     expect(proposal?.config.tests.command).toMatch(/test/);

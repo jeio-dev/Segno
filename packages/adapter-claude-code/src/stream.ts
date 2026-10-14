@@ -121,7 +121,8 @@ export function readStream({ sessionId, structured, emit }: StreamOptions) {
       if (!result)
         return {
           kind: "crashed",
-          detail: "The stream ended without a result.",
+          // claude reports a refused command line on stderr alone.
+          detail: stderr || "The stream ended without a result.",
           ...exit,
         };
       if (result.is_error || code !== 0)

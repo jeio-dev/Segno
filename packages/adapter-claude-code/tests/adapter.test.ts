@@ -281,6 +281,23 @@ test("a resumed, read-only Run with an output schema and network allowed", async
   });
 });
 
+test("an output schema is passed without its $schema key, which Claude Code can't resolve", async () => {
+  const { replay } = await run(
+    coderSpec(tempDir(), {
+      outputSchema: {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        properties: { word: { type: "string" } },
+      },
+    }),
+    { fixture: "completed-structured" },
+  );
+  const argv = replay.argv()[0] ?? [];
+  expect(argv[argv.indexOf("--json-schema") + 1]).toBe(
+    '{"type":"object","properties":{"word":{"type":"string"}}}',
+  );
+});
+
 test("the onboarding profile allows every command and the network, minus the always-denied set", async () => {
   const dir = tempDir();
   const { replay } = await run(
@@ -411,6 +428,20 @@ test("a stream that ends without a result is crashed, with its exit code", async
     kind: "crashed",
     detail: "The stream ended without a result.",
     exitCode: 143,
+  });
+});
+
+test("claude's stderr is the detail of a Run that ends without a result", async () => {
+  const { result } = await run(coderSpec(tempDir()), {
+    stderr:
+      'Error: --json-schema is not a valid JSON Schema: no schema with key or ref "https://json-schema.org/draft/2020-12/schema"\n',
+    exit: 1,
+  });
+  expect(result).toEqual({
+    kind: "crashed",
+    detail:
+      'Error: --json-schema is not a valid JSON Schema: no schema with key or ref "https://json-schema.org/draft/2020-12/schema"',
+    exitCode: 1,
   });
 });
 

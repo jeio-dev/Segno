@@ -72,6 +72,8 @@ export interface StubOptions {
   orphan?: boolean;
   /** Printed for `--version`. */
   version?: string;
+  /** Written to stderr before exiting. */
+  stderr?: string;
   /** Edits the fixture's messages, for a case no recording shows. */
   edit?: (message: Record<string, unknown>) => Record<string, unknown>;
 }
@@ -101,6 +103,7 @@ export function replayStub(dir: string, options: StubOptions = {}) {
     hold: options.hold ?? false,
     ignoreTerm: options.ignoreTerm ?? false,
     orphan: options.orphan ?? false,
+    stderr: options.stderr ?? "",
     orphanPidPath: join(dir, "orphan.pid"),
     version: options.version ?? `${manifest.recordedWith} (Claude Code)`,
     argvPath: join(dir, "argv.jsonl"),
@@ -147,6 +150,7 @@ if (config.hold)
 for (const line of config.lines)
   process.stdout.write(line.replaceAll(config.placeholder, session) + "\\n");
 function end() {
+  if (config.stderr) process.stderr.write(config.stderr);
   if (config.signal) process.kill(process.pid, config.signal);
   else process.exit(config.exit);
 }

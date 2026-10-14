@@ -130,6 +130,7 @@ export function openWork(deps: WorkDeps) {
     cwd: string,
   ) {
     const config = deps.config();
+    const permissions = permissionsFor(kind, config);
     const definition = plan.definition.phases.find(({ id }) => id === phase.id);
     if (!definition)
       throw new Error(`Plan ${plan.id} has no Phase ${phase.id}.`);
@@ -140,6 +141,7 @@ export function openWork(deps: WorkDeps) {
           task: task.definition,
           base,
           schema: verdictJsonSchema,
+          permissions,
         }),
         outputSchema: verdictJsonSchema,
       };
@@ -151,6 +153,7 @@ export function openWork(deps: WorkDeps) {
           phase: definition,
           task: task.definition,
           testsCommand: config.tests.command,
+          permissions,
         }),
       };
     if (!phase.baseSha) throw new Error(`Phase ${phase.id} has no base.`);
@@ -179,6 +182,7 @@ export function openWork(deps: WorkDeps) {
         base: phase.baseSha,
         baseBranch: config.baseBranch,
         changelog: config.docs.changelog,
+        permissions,
       }),
     };
   }

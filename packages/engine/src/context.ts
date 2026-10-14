@@ -8,8 +8,14 @@ import type { Phase, Plan, Task } from "@segno/plan-format";
 
 type AgentKind = "coder" | "docs" | "reviewer";
 
-/** The Reviewer's read-only shell commands [ADR-0004]. */
-const readOnlyShell = ["git log *", "git show *", "git diff *", "ls *"];
+/**
+ * Listing and searching files: Claude Code has no Glob or Grep tool, and
+ * none of these can write a file or start another program [ADR-0059].
+ */
+const searchShell = ["ls *", "grep *", "git ls-files *", "git grep *"];
+
+/** The Reviewer's read-only shell commands [ADR-0004] [ADR-0059]. */
+const readOnlyShell = ["git log *", "git show *", "git diff *", ...searchShell];
 
 /** The default permission profile of a Role, plus its config `allow` [ADR-0004]. */
 export function permissionsFor(
@@ -37,6 +43,7 @@ export function permissionsFor(
       "git show *",
       "git add *",
       "git commit *",
+      ...searchShell,
     ],
     network: false,
     mcp: false,
@@ -50,17 +57,37 @@ interface Finding {
   body: string;
 }
 
-/** The first-pass Coder's context [ADR-0024] [ADR-0049]. */
+/**
+ * The shell commands a Run may use, one at a time [ADR-0058]. Claude Code
+ * refuses a joined command whole, and agents that chain an unlisted one
+ * otherwise take the shell for off.
+ */
+function shellSection({ shell, extraAllow }: PermissionProfile) {
+  const commands = [
+    ...shell,
+    ...extraAllow.flatMap((entry) => /^Bash\((.+)\)$/s.exec(entry)?.[1] ?? []),
+  ];
+  return [
+    "## Shell",
+    "Run only these shell commands, where `*` stands for any arguments:",
+    list(commands.map((command) => `\`${command}\``)),
+    "Run each one on its own, never joined with `&&`, `||`, `;`, `|` or `$(…)`: a joined command is refused whole if any part isn't listed. A refused command doesn't turn the shell off, so keep using the listed ones.",
+  ];
+}
+
+/** The first-pass Coder's context [ADR-0024] [ADR-0049] [ADR-0058]. */
 export function coderPrompt({
   plan,
   phase,
   task,
   testsCommand,
+  permissions,
 }: {
   plan: Plan;
   phase: Phase;
   task: Task;
   testsCommand: string;
+  permissions: PermissionProfile;
 }) {
   return document([
     "You are working one Task of a Segno Plan, in this worktree.",
@@ -74,6 +101,7 @@ export function coderPrompt({
     ...(task.context?.length
       ? ["### Context", "Start from these:", list(task.context)]
       : []),
+    ...shellSection(permissions),
     "## Definition of done",
     list([
       "Meet every acceptance criterion.",
@@ -84,16 +112,18 @@ export function coderPrompt({
   ]);
 }
 
-/** The Reviewer's context, asking for a Verdict [ADR-0024] [ADR-0016]. */
+/** The Reviewer's context, asking for a Verdict [ADR-0024] [ADR-0016] [ADR-0058]. */
 export function reviewerPrompt({
   task,
   base,
   schema,
+  permissions,
 }: {
   task: Task;
   /** The merge-base of the Task branch with the Phase branch. */
   base: string;
   schema: JSONSchema;
+  permissions: PermissionProfile;
 }) {
   const range = `${base}..HEAD`;
   return document([
@@ -114,13 +144,14 @@ export function reviewerPrompt({
     `Review the changes in \`${range}\`, for example with \`git diff ${range}\`.`,
     "## Docs",
     "Check whether the changes alter behavior that docs describe, and whether those docs were updated to match.",
+    ...shellSection(permissions),
     "## Verdict",
     "Answer with a Verdict that matches this JSON Schema. In `acceptance`, `index` is the criterion's number above.",
     fenced(schema),
   ]);
 }
 
-/** The Docs task's context [ADR-0024] [ADR-0018]. */
+/** The Docs task's context [ADR-0024] [ADR-0018] [ADR-0058]. */
 export function docsPrompt({
   plan,
   phase,
@@ -129,6 +160,7 @@ export function docsPrompt({
   base,
   baseBranch,
   changelog,
+  permissions,
 }: {
   plan: Plan;
   phase: Phase;
@@ -139,6 +171,7 @@ export function docsPrompt({
   base: string;
   baseBranch: string;
   changelog: string;
+  permissions: PermissionProfile;
 }) {
   return document([
     "You are writing the docs for a finished Phase of a Segno Plan, in this worktree.",
@@ -163,6 +196,7 @@ export function docsPrompt({
     "## Changes",
     `The Phase's changes are \`${base}..HEAD\`, against \`${baseBranch}\`.`,
     ...(phase.docs ? ["## Docs to write", phase.docs] : []),
+    ...shellSection(permissions),
     "## Changelog",
     `Add entries for user-visible changes to \`${changelog}\`.`,
     "Commit your work when you're done.",
